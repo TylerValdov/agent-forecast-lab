@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
+
+# Raw data cache is reproducible from `forecast-lab data refresh`; never commit dumps.
+/data/
+
+# Run outputs: keep only small summaries and the live ledger (which must be committed pre-tipoff).
+runs/*
+!runs/README.md
+!runs/live/
+runs/live/cache/
+!runs/*/summary.json
+
+# Offline fake-LLM pipeline runs are never results.
+runs_fake/

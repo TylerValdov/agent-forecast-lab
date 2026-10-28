@@ -1,0 +1,9 @@
+# Data layer configuration.
+cache_dir: data/cache
+# Regular-season NBA seasons to load for replay / baselines.
+seasons: ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]
+# A game's result is treated as knowable only this long after tipoff (historical data has
+# no exact final-whistle time). Deliberately generous: real games last ~2h15m, OT ~2h45m.
+result_delay_minutes: 210
+# Seconds to sleep between stats.nba.com requests (rate-limit courtesy).
+request_pause_s: 1.0

@@ -1,0 +1,87 @@
+"""Experiment configuration (pre-registered YAML)."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import date
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
+
+Mode = Literal["live", "replay_anonymized", "replay_raw"]
+VariantId = Literal["A", "B", "C", "D"]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class GameSelection(_Strict):
+    start: date
+    end: date  # exclusive
+    sample: int | None = None  # seeded subsample size (kept in chronological order)
+    sample_seed: int = 0
+
+
+class AgentSettings(_Strict):
+    max_steps: int = 8
+    critique_extra_steps: int = 4
+    max_tokens_per_call: int = 4000
+    max_total_tokens: int = 60_000
+    prompt_version: str = "v1"
+
+
+class MemorySettings(_Strict):
+    k: int = 10
+
+
+class HintSettings(_Strict):
+    rate: float = Field(0.2, ge=0, le=1)
+    seed: int = 0
+
+
+class Budget(_Strict):
+    usd: float
+    tokens: int
+
+
+class Comparison(_Strict):
+    a: str  # variant id or baseline name
+    b: str
+    rq: str  # which research question this comparison addresses
+
+
+class Evaluation(_Strict):
+    reference_baseline: str = "elo"
+    min_n: int = 100
+    bootstrap_resamples: int = 10_000
+    bootstrap_seed: int = 0
+    comparisons: list[Comparison] = []
+
+
+class ExperimentConfig(_Strict):
+    name: str
+    description: str = ""
+    status: Literal["preregistered", "exploratory"] = "preregistered"
+    domain: Literal["nba"] = "nba"
+    mode: Mode
+    model: str
+    effort: Literal["low", "medium", "high"] = "low"
+    seed: int = 0
+    repeats: int = 1
+    variants: list[VariantId]
+    lead_minutes: int = 60
+    games: GameSelection
+    agent: AgentSettings = AgentSettings()
+    memory: MemorySettings = MemorySettings()
+    hints: HintSettings = HintSettings()
+    budget: Budget
+    evaluation: Evaluation = Evaluation()
+
+
+def load_config(path: str | Path) -> tuple[ExperimentConfig, str]:
+    """-> (config, sha256 of the exact file bytes)."""
+    raw = Path(path).read_bytes()
+    return ExperimentConfig(**yaml.safe_load(raw)), hashlib.sha256(raw).hexdigest()

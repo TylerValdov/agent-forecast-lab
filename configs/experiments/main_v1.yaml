@@ -1,0 +1,46 @@
+# PRE-REGISTERED main experiment. Committing this file is the act of pre-registration:
+# `forecast-lab run` refuses to start unless it is committed and unmodified, and records its
+# sha256 in every result. Any later change requires a new file (main_v2.yaml) and the
+# change is reported; variants added after seeing results are labelled exploratory.
+#
+# Hypotheses (two-sided, alpha 0.05 after Holm correction across the 5 comparisons):
+#   H1 (RQ1): memory (B) changes Brier vs baseline agent (A).
+#   H2 (RQ2): self-critique (C) changes Brier vs A; secondary: C is more confident than A.
+#   H3 (RQ3): a false hint (D) shifts forecasts toward the hint vs A on the same games.
+#   H4/H5:    the baseline agent (A) differs in Brier from Elo and from logistic regression.
+name: main_v1
+description: "Variants A-D vs baselines on 600 anonymized games from the 2025-26 season."
+status: preregistered
+domain: nba
+mode: replay_anonymized
+model: claude-haiku-5-5
+effort: low
+seed: 1
+repeats: 1
+variants: [A, B, C, D]
+lead_minutes: 60
+games:
+  start: 2025-11-15   # skip the first weeks so every team has a form history
+  end: 2026-04-13
+  sample: 600
+  sample_seed: 101
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v1
+memory: {k: 10}
+hints: {rate: 0.2, seed: 202}
+budget: {usd: 15.00, tokens: 40000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 300
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  comparisons:
+    - {a: B, b: A, rq: RQ1}
+    - {a: C, b: A, rq: RQ2}
+    - {a: D, b: A, rq: RQ3}
+    - {a: A, b: elo, rq: "agent vs Elo"}
+    - {a: A, b: logistic, rq: "agent vs logistic"}

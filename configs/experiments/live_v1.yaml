@@ -1,0 +1,32 @@
+# Live forecasting on the 2026-27 season: primary, contamination-free evidence.
+# Predictions are appended to runs/live/predictions.jsonl and committed before tip-off.
+name: live_v1
+description: "Daily live forecasts for 2026-27 NBA games, variants A-D plus baselines."
+status: preregistered
+domain: nba
+mode: live
+model: claude-haiku-5-5
+effort: low
+seed: 1
+repeats: 1
+variants: [A, B, C, D]
+lead_minutes: 60
+games: {start: 2026-11-22, end: 2027-04-12}
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v1
+memory: {k: 10}
+hints: {rate: 0.2, seed: 303}
+budget: {usd: 1.00, tokens: 3000000}  # per daily job
+evaluation:
+  reference_baseline: elo
+  min_n: 300
+  comparisons:
+    - {a: B, b: A, rq: RQ1}
+    - {a: C, b: A, rq: RQ2}
+    - {a: D, b: A, rq: RQ3}
+    - {a: A, b: elo, rq: "agent vs Elo"}
+    - {a: A, b: market, rq: "agent vs market"}

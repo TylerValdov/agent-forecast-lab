@@ -1,0 +1,38 @@
+# Milestone-5 pilot: 100 games, all variants, to check the pipeline, cost per prediction and
+# failure rates before the pre-registered run. Pilot results are NOT used to tune the main
+# experiment's hypotheses; they are reported as a pilot.
+name: pilot_v1
+description: "Pilot of variants A-D on 100 anonymized 2025-26 games."
+status: exploratory
+domain: nba
+mode: replay_anonymized
+model: claude-haiku-5-5
+effort: low
+seed: 1
+repeats: 1
+variants: [A, B, C, D]
+lead_minutes: 60
+games:
+  start: 2026-01-01
+  end: 2026-04-13
+  sample: 100
+  sample_seed: 11
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v1
+memory: {k: 10}
+hints: {rate: 0.2, seed: 21}
+budget: {usd: 2.00, tokens: 5000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 100
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  comparisons:
+    - {a: A, b: elo, rq: "agent vs baseline"}
+    - {a: B, b: A, rq: RQ1}
+    - {a: C, b: A, rq: RQ2}
+    - {a: D, b: A, rq: RQ3}

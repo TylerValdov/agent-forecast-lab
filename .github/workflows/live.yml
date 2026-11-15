@@ -1,0 +1,58 @@
+# Scheduled live forecasting. Predictions are committed to the repo BEFORE tip-off, so the
+# commit timestamp is public, third-party evidence that forecasts were not made after the fact.
+#
+# Caveat: stats.nba.com frequently blocks cloud-provider IPs (including GitHub-hosted
+# runners). If the data step fails here, run the same two commands from a home machine
+# (cron / Windows Task Scheduler) or a self-hosted runner. See README "Live mode".
+name: live
+
+on:
+  schedule:
+    - cron: "0 16 * * *"   # 16:00 UTC (11am ET): before the earliest regular tip-offs
+    - cron: "0 11 * * *"   # 11:00 UTC: resolve last night's games
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "predict or resolve"
+        default: predict
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-ledger
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Choose job
+        id: job
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "job=${{ inputs.job }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
+            echo "job=resolve" >> "$GITHUB_OUTPUT"
+          else
+            echo "job=predict" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          forecast-lab data refresh --seasons $(python -c "import yaml;print(' '.join(yaml.safe_load(open('configs/data.yaml'))['seasons']))")
+          forecast-lab live ${{ steps.job.outputs.job }}
+      - name: Commit ledger
+        run: |
+          git config user.name "forecast-lab-bot"
+          git config user.email "forecast-lab-bot@users.noreply.github.com"
+          git add runs/live/*.jsonl
+          git diff --cached --quiet || git commit -m "live: ${{ steps.job.outputs.job }} $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push

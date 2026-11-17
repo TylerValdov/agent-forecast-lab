@@ -112,6 +112,8 @@ def parse_schedule(df: pd.DataFrame, season: str, result_delay: timedelta):
     scheduled: list[ScheduledGame] = []
     results: list[GameResult] = []
     for row in df.itertuples(index=False):
+        if pd.isna(row.homeTeam_teamTricode) or pd.isna(row.awayTeam_teamTricode):
+            continue  # placeholder slot (e.g. NBA Cup knockout game, teams not yet known)
         tip = _parse_utc(row.gameDateTimeUTC)
         game = ScheduledGame(
             game_id=row.gameId,
@@ -141,7 +143,7 @@ def parse_team_logs(df: pd.DataFrame, results: list[GameResult]) -> list[TeamBox
         r = by_id.get(row.GAME_ID)
         if r is None or row.TEAM_ABBREVIATION not in (r.home, r.away):
             continue
-        is_home = row.TEAM_ABBREVIATION == r.home
+        is_home = r.home == row.TEAM_ABBREVIATION
         poss = float(row.FGA) + 0.44 * float(row.FTA) - float(row.OREB) + float(row.TOV)
         out.append(TeamBox(
             game_id=r.game_id,

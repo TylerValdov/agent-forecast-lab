@@ -28,7 +28,13 @@ BASELINES_SHOWN = ["elo", "logistic", "gbm", "home_rate", "always_0.5"]
 def _fmt(x, nd=4):
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return "–"
-    return f"{x:.{nd}f}" if isinstance(x, float | np.floating) else str(x)
+    if isinstance(x, float | np.floating):
+        if abs(x) >= 100:
+            return f"{x:,.0f}"
+        if 0 < abs(x) < 0.01:
+            return f"{x:.2e}"
+        return f"{x:.{nd}f}"
+    return str(x)
 
 
 def _table(df: pd.DataFrame, nd: int = 4) -> str:
@@ -73,10 +79,10 @@ def section_run(run_dir: Path, runs_root: Path, fig_dir: Path) -> str:
     lines += [
         f"- **Mode:** `{mode}`" + ("" if primary else " (NOT primary evidence: raw replay "
                                     "of an LLM is contaminated by memorization)"),
-        f"- **Status:** {manifest['status']}"
-        + (" — EXPLORATORY (config not committed at run time)"
+        "- **Status:** "
+        + ("EXPLORATORY (config not committed at run time)"
            if manifest["prereg"]["exploratory"] else
-           f" — config sha256 `{manifest['prereg']['config_sha256'][:16]}`, "
+           f"{manifest['status']}, config sha256 `{manifest['prereg']['config_sha256'][:16]}`, "
            f"commit `{(manifest['prereg']['git_commit'] or '')[:10]}`"),
         f"- **Model:** `{manifest['model']}` (effort `{manifest['effort']}`), prompts "
         f"`{manifest['prompt_version']}` (bundle `{manifest['prompt_bundle_hash']}`), "
@@ -323,7 +329,7 @@ LIMITATIONS = """## Limitations
 
 def build_report(runs_root: Path = Path("runs"), out: Path = Path("REPORT.md"),
                  run_dirs: list[Path] | None = None) -> Path:
-    fig_dir = Path("docs/figures")
+    fig_dir = out.parent / "docs" / "figures"
     if run_dirs is None:
         run_dirs = sorted(p.parent for p in runs_root.glob("*/*/manifest.json")
                           if p.parent.parent.name not in ("baselines", "live"))

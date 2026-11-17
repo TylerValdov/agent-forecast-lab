@@ -142,3 +142,11 @@ was not available in the build environment.
 2026-11: Haiku 5.5 at $0.10/$0.50 per million input/output tokens, Sonnet 5.5 at $2/$10 and
 Opus 5.5 at $4/$20. A model without a price entry refuses to run, so costs cannot go
 unrecorded.
+
+## Observations that will NOT be acted on silently
+
+**O1. Elo overrates home teams in 2022-26** (reliability curve below the diagonal, ECE
+0.066 vs 0.024 for logistic). Its fixed 100-point home advantage predates the post-2020
+drop in home-court edge (observed home-win rate 55.5%). Re-tuning after seeing this would be
+tuning on test data. A walk-forward-estimated home advantage may be added later only as a
+new, separately named baseline (`elo_hfa_wf`) registered before it is evaluated.

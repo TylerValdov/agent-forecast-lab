@@ -80,6 +80,23 @@ export $(cat .env | xargs)                 # or set it in your shell
 forecast-lab run configs/experiments/pilot_v1.yaml --exploratory   # ~100 games, capped at $2
 ```
 
+### With your Claude subscription (no API key)
+
+The `claude_code` backend runs the same agent through the Claude Code CLI (`claude -p`),
+which uses your Claude subscription and its usage limits. Log in once with `claude`, then:
+
+```bash
+forecast-lab run configs/experiments/pilot_v1.yaml --backend claude_code --exploratory
+# if it stops at a usage limit, continue later under the same run id:
+forecast-lab run configs/experiments/pilot_v1.yaml --backend claude_code --exploratory     --resume runs/pilot_v1/<run_id>
+```
+
+Your API key is stripped from the CLI's environment, and the run aborts if Claude Code
+reports anything other than subscription login, or any tool besides ours. Claude Code adds
+about 1.1k tokens of its own context, including today's date. That is fine for `live`
+mode, but it is a confound for replay, so results record their `backend` and the two
+backends are never pooled (see [DECISIONS](docs/DECISIONS.md) D28).
+
 Each LLM run writes `runs/<experiment>/<run_id>/` containing `manifest.json` (config hash,
 git commit, model ID, prompt bundle hash, data snapshot hash, spend),
 `predictions.jsonl` (full trajectories), `outcomes.jsonl` and `memory_r*.jsonl`.

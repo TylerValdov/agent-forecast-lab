@@ -63,7 +63,10 @@ def predict(llm: LLMClient, store: DataStore, game: ScheduledGame, as_of: dateti
             raise RuntimeError(f"anonymization leak in task for {game.game_id}: {leaked}")
     toolbox = NBAToolbox(store, game, as_of, ctx.masker,
                          injuries_enabled=store.injuries_available)
-    res = run_agent(llm, toolbox, task, ctx.agent_cfg, critique=(variant == "C"))
+    if hasattr(llm, "run_forecast"):  # e.g. the claude_code (subscription) backend
+        res = llm.run_forecast(toolbox, task, ctx.agent_cfg, critique=(variant == "C"))
+    else:
+        res = run_agent(llm, toolbox, task, ctx.agent_cfg, critique=(variant == "C"))
     return {
         "kind": "agent",
         "run_id": ctx.run_id,
@@ -78,6 +81,7 @@ def predict(llm: LLMClient, store: DataStore, game: ScheduledGame, as_of: dateti
         "variant_name": VARIANT_NAMES[variant],
         "repeat": repeat,
         "model": llm.model,
+        "backend": getattr(llm, "backend", "api"),
         "prompt_version": ctx.agent_cfg.prompt_version,
         "as_of": as_of.isoformat(),
         "prob": res.prob,

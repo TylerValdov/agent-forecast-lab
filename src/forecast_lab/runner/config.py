@@ -69,6 +69,9 @@ class ExperimentConfig(_Strict):
     mode: Mode
     model: str
     effort: Literal["low", "medium", "high"] = "low"
+    # "api": Anthropic API key (clean; billed per token). "claude_code": Claude Code CLI on
+    # the user's subscription (adds Claude Code's own context; see DECISIONS D28).
+    backend: Literal["api", "claude_code"] = "api"
     seed: int = 0
     repeats: int = 1
     variants: list[VariantId]

@@ -150,3 +150,47 @@ unrecorded.
 drop in home-court edge (observed home-win rate 55.5%). Re-tuning after seeing this would be
 tuning on test data. A walk-forward-estimated home advantage may be added later only as a
 new, separately named baseline (`elo_hfa_wf`) registered before it is evaluated.
+
+## Backends
+
+**D28. Second backend: `claude_code` (Claude subscription via `claude -p`).** It was added so that
+experiments can run on the owner's Claude subscription instead of a paid API key. Each
+prediction launches the Claude Code CLI in headless mode with the following settings:
+- our system prompt replaces Claude Code's (`--system-prompt-file`);
+- built-in tools are off (`--tools ""`);
+- user and project settings, plugins and hooks are not loaded (`--setting-sources ""`,
+  `--strict-mcp-config`);
+- our tools are the only ones available, served by `agents/mcp_server.py` and bound to one
+  `(game, as_of)` through the same `NBAToolbox` and `DataStore`, so the leakage guard and
+  masking are unchanged.
+
+Safeguards:
+- `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from the child process's
+  environment.
+- The session's init event must report `apiKeySource: none` (the subscription login) and no
+  tools other than ours. Otherwise the run aborts with `IsolationError`.
+
+Differences from the API backend, all measured on 2026-11-22 with Claude Code 2.1.305:
+- **Extra context (a confound).** Claude Code always adds about 1.1k tokens of its own
+  context: today's real date, the model's knowledge cutoff, an environment block (OS, shell,
+  working directory) and the account email. Three built-in plugins also always load.
+  None of this can be turned off without `--bare`, and `--bare` cannot use subscription
+  login. The real date is harmless in `live` mode. In replay modes it is a confound, because
+  the model is told it is 2026-11 while it forecasts a masked past game.
+- **Results are kept apart.** Every record carries `backend`. Replay results from the two
+  backends are never pooled, and the API backend stays the reference for replay experiments.
+- **Step limit.** It is enforced inside the MCP server as a cap on tool calls (2 × max_steps).
+  It is not enforced on model turns, which Claude Code does not expose as a hard cap.
+- **Cost.** `cost_usd` is the API-equivalent list price of the tokens used. Nothing is billed
+  per token. The budget guard uses this value as a usage cap.
+- **Effort.** It is passed with `--effort`. Thinking is controlled by Claude Code.
+
+**D29. Runs are resumable, because subscriptions have usage limits.** A usage limit raises
+`UsageLimitReached`, and the run stops cleanly with that reason recorded.
+`forecast-lab run <config> --resume runs/<exp>/<run_id>` continues under the same run_id.
+Resuming is refused if the config hash, data snapshot or backend has changed. Every
+prediction, outcome and memory note is written to disk before the next step runs, so
+predict-before-reveal and the memory time-gating hold across a resume (tested). Memory-note
+costs are now written to the ledger as `kind: note` records, so spending can be audited.
+
+**D30. `.env` is loaded by the CLI and never overrides variables that are already set.**

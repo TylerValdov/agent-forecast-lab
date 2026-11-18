@@ -9,6 +9,22 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Minimal .env loader: KEY=VALUE lines; never overrides variables already set."""
+    import os
+
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip().strip('"').strip("'")
+        if key.strip() and value:
+            os.environ.setdefault(key.strip(), value)
+
+
 def _load_store(seasons: list[str] | None = None, live: bool = False, refresh: bool = False):
     """Replay/baselines use the frozen historical seasons in configs/data.yaml (so the data
     snapshot hash is stable). Live mode adds the current season, re-fetched if `refresh`."""
@@ -45,15 +61,26 @@ def cmd_baselines(a) -> None:
     print(f"\nwritten to {out}")
 
 
-def _llm(cfg, fake: bool):
+def _llm(cfg, fake: bool, backend: str | None = None):
     if fake:
         from forecast_lab.agents.fake import HeuristicFakeLLM
 
         print("WARNING: using the offline fake LLM (pipeline test only; not a real result)")
         return HeuristicFakeLLM()
+    backend = backend or cfg.backend
+    if backend == "claude_code":
+        from forecast_lab.agents.claude_code import ClaudeCodeLLM
+
+        print("Backend: claude_code (Claude subscription via `claude -p`; see DECISIONS D28)")
+        return ClaudeCodeLLM(cfg.model, effort=cfg.effort)
     from forecast_lab.agents.llm import AnthropicLLM
 
     return AnthropicLLM(cfg.model, effort=cfg.effort)
+
+
+def _backend_override(a, cfg) -> bool:
+    """True if --backend differs from the config (which makes the run exploratory)."""
+    return bool(getattr(a, "backend", None)) and a.backend != cfg.backend
 
 
 def cmd_run(a) -> None:
@@ -62,12 +89,17 @@ def cmd_run(a) -> None:
     from forecast_lab.runner.replay import run_replay
 
     cfg, h = load_config(a.config)
-    prereg = check_preregistered(Path(a.config), h, exploratory=a.exploratory or a.fake_llm)
+    override = _backend_override(a, cfg)
+    if override:
+        print(f"NOTE: --backend {a.backend} differs from the config: run is exploratory.")
+    prereg = check_preregistered(Path(a.config), h,
+                                 exploratory=a.exploratory or a.fake_llm or override)
     if cfg.mode == "replay_raw":
         print("NOTE: replay_raw LLM results are contaminated and never primary evidence.")
     store = _load_store()
-    out = run_replay(cfg, prereg, store, _llm(cfg, a.fake_llm),
-                     out_root=Path("runs_fake") if a.fake_llm else Path("runs"))
+    out = run_replay(cfg, prereg, store, _llm(cfg, a.fake_llm, a.backend),
+                     out_root=Path("runs_fake") if a.fake_llm else Path("runs"),
+                     resume_dir=Path(a.resume) if a.resume else None)
     print(json.dumps(json.loads((out / "manifest.json").read_text())
                      | {"config": "...", "hint_game_ids": "..."}, indent=2))
 
@@ -91,9 +123,10 @@ def cmd_live_predict(a) -> None:
     from forecast_lab.runner.prereg import check_preregistered
 
     cfg, h = load_config(a.config)
-    prereg = check_preregistered(Path(a.config), h, exploratory=a.dry_run)
+    override = _backend_override(a, cfg)
+    prereg = check_preregistered(Path(a.config), h, exploratory=a.dry_run or override)
     store = _load_store(live=True, refresh=not a.dry_run)
-    llm = None if a.baselines_only else _llm(cfg, a.fake_llm)
+    llm = None if a.baselines_only else _llm(cfg, a.fake_llm, a.backend)
     print(json.dumps(live_predict(cfg, prereg, store, llm, _now(a), _live_dir(a),
                                   market=OddsAPIMarket()), indent=2))
 
@@ -104,7 +137,7 @@ def cmd_live_resolve(a) -> None:
 
     cfg, _ = load_config(a.config)
     store = _load_store(live=True, refresh=not a.dry_run)
-    llm = None if a.baselines_only else _llm(cfg, a.fake_llm)
+    llm = None if a.baselines_only else _llm(cfg, a.fake_llm, a.backend)
     print(json.dumps(live_resolve(store, llm, _now(a), _live_dir(a)), indent=2))
 
 
@@ -137,6 +170,10 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--exploratory", action="store_true",
                    help="allow an uncommitted config; the run is labelled exploratory")
     e.add_argument("--fake-llm", action="store_true", help="offline pipeline test")
+    e.add_argument("--backend", choices=["api", "claude_code"],
+                   help="override the config's backend (makes the run exploratory)")
+    e.add_argument("--resume", metavar="RUN_DIR",
+                   help="continue a stopped run (same config, data and backend)")
     e.set_defaults(fn=cmd_run)
 
     lv = sub.add_parser("live", help="live mode jobs").add_subparsers(required=True)
@@ -148,12 +185,14 @@ def main(argv: list[str] | None = None) -> None:
         q.add_argument("--now", help="simulated clock (ISO 8601), dry-run only")
         q.add_argument("--baselines-only", action="store_true")
         q.add_argument("--fake-llm", action="store_true")
+        q.add_argument("--backend", choices=["api", "claude_code"])
         q.set_defaults(fn=fn)
 
     rp = sub.add_parser("report", help="generate REPORT.md")
     rp.add_argument("runs", nargs="*", help="run dirs (default: all)")
     rp.set_defaults(fn=cmd_report)
 
+    load_dotenv()
     a = p.parse_args(argv)
     a.fn(a)
 

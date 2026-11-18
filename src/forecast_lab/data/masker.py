@@ -38,6 +38,7 @@ NBA_TEAMS: dict[str, tuple[str, str]] = {
 class Masker:
     def __init__(self, salt: str, enabled: bool = True, epoch: date | None = None) -> None:
         self.enabled = enabled
+        self.salt = salt
         self._key = salt.encode()
         self._epoch = epoch or date(2000, 1, 1)
         self._players: set[str] = set()

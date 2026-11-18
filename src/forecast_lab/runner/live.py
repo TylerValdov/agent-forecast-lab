@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from forecast_lab.agents.agent import AgentConfig, write_note
+from forecast_lab.agents.claude_code import UsageLimitReached
 from forecast_lab.agents.hints import make_hint, verify_false
 from forecast_lab.agents.llm import LLMClient
 from forecast_lab.agents.memory import MemoryStore, Note
@@ -108,7 +109,11 @@ def live_predict(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
                 return summary
             # Lead time shown to the agent is the real time remaining.
             ctx.lead_minutes = int((g.tipoff_utc - now).total_seconds() // 60)
-            rec = predict(llm, store, g, now, v, ctx, memory=memory, hint=hint)
+            try:
+                rec = predict(llm, store, g, now, v, ctx, memory=memory, hint=hint)
+            except UsageLimitReached as e:
+                summary["stopped_reason"] = f"subscription usage limit: {e}"
+                return summary
             ledger.append(rec)
             budget.charge(rec["cost_usd"], sum(rec["tokens"].values()))
             summary["agent_predictions"] += 1
@@ -139,8 +144,12 @@ def live_resolve(store: DataStore, llm: LLMClient | None, now: datetime, out_dir
             continue
         for rec in records:
             if rec["game_id"] == gid and rec.get("variant") == "B" and rec.get("prob"):
-                text, _, _ = write_note(llm, note_summary(rec, res.home_win, Masker("", False)),
-                                        prompt_version)
+                try:
+                    text, _, _ = write_note(llm, note_summary(rec, res.home_win,
+                                                              Masker("", False)),
+                                            prompt_version)
+                except UsageLimitReached:
+                    text = None  # note skipped; memory stays time-gated, so this is safe
                 if text:
                     memory.add(Note(f"live:{gid}", now, gid, text))
     return {"now": now.isoformat(), "resolved": n, "still_pending": len(pending) - n}

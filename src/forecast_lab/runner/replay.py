@@ -5,6 +5,10 @@ Per game, strictly in this order:
   2. reveal the outcome (clock = the result's availability time) into a SEPARATE file;
   3. only then write memory notes (variant B), timestamped at the reveal clock.
 Games are never shuffled; a seeded subsample keeps chronological order.
+
+Runs are resumable (`resume_dir`): every prediction, outcome and memory note is on disk
+before the next step starts, so a run stopped by a budget cap, a subscription usage limit
+or a crash continues where it stopped, under the same run_id and config hash.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from pathlib import Path
 from forecast_lab import __version__
 from forecast_lab.agents import prompts
 from forecast_lab.agents.agent import AgentConfig, write_note
+from forecast_lab.agents.claude_code import UsageLimitReached
 from forecast_lab.agents.hints import make_hint, select_hint_games, verify_false
 from forecast_lab.agents.llm import LLMClient
 from forecast_lab.agents.memory import MemoryStore, Note
@@ -53,22 +58,60 @@ def note_summary(rec: dict, home_win: bool, masker: Masker) -> str:
             f"Your reasoning: {rec['reasoning']}\nOutcome: {winner} won.")
 
 
+class ResumeError(RuntimeError):
+    pass
+
+
+def _spent(records: list[dict]) -> tuple[float, int]:
+    usd = sum(r.get("cost_usd") or 0.0 for r in records if r.get("kind") in ("agent", "note"))
+    tok = sum(sum((r.get("tokens") or {}).values()) for r in records
+              if r.get("kind") in ("agent", "note"))
+    return usd, tok
+
+
 def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
-               llm: LLMClient, out_root: Path = Path("runs")) -> Path:
+               llm: LLMClient, out_root: Path = Path("runs"),
+               resume_dir: Path | None = None) -> Path:
     if cfg.mode == "live":
         raise ValueError("use the live runner for mode=live")
-    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
-    out = out_root / cfg.name / run_id
-    out.mkdir(parents=True)
+    backend = getattr(llm, "backend", "api")
+    if backend != cfg.backend and not prereg.exploratory:
+        raise ValueError(f"config says backend={cfg.backend} but the client is {backend}")
+    if resume_dir is not None:
+        out = Path(resume_dir)
+        old = json.loads((out / "manifest.json").read_text())
+        if old["prereg"]["config_sha256"] != prereg.config_sha256:
+            raise ResumeError("config changed since this run started; start a new run")
+        if old["data_snapshot"] != store.snapshot_hash:
+            raise ResumeError("data snapshot changed since this run started")
+        if old.get("backend", "api") != backend:
+            raise ResumeError("cannot resume a run with a different backend")
+        run_id = old["run_id"]
+    else:
+        run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
+        out = out_root / cfg.name / run_id
+        out.mkdir(parents=True)
     ledger, outcomes = Ledger(out / "predictions.jsonl"), Ledger(out / "outcomes.jsonl")
     masker = Masker(salt=f"{cfg.name}:{cfg.seed}", enabled=cfg.mode == "replay_anonymized")
     agent_cfg = AgentConfig(**cfg.agent.model_dump())
     ctx = RunContext(run_id, prereg.config_sha256, cfg.mode, masker, agent_cfg,
                      cfg.lead_minutes, cfg.memory.k, prereg.exploratory)
     memories = {r: MemoryStore(out / f"memory_r{r}.jsonl") for r in range(cfg.repeats)}
-    budget = BudgetGuard(cfg.budget.usd, cfg.budget.tokens)
     lead = timedelta(minutes=cfg.lead_minutes)
     far_future = datetime(2100, 1, 1, tzinfo=UTC)
+
+    prior = ledger.records()
+    done = {(r["game_id"], r["variant"], r.get("repeat", 0)) for r in prior
+            if r.get("kind") in ("agent", "skip")}
+    noted = {r["note_id"] for r in prior if r.get("kind") == "note"}
+    b_records = {(r["game_id"], r.get("repeat", 0)): r for r in prior
+                 if r.get("kind") == "agent" and r["variant"] == "B"}
+    revealed = {r["game_id"] for r in outcomes.records()}
+    budget = BudgetGuard(cfg.budget.usd, cfg.budget.tokens)
+    usd0, tok0 = _spent(prior)
+    n0 = sum(1 for r in prior if r.get("kind") in ("agent", "note"))
+    if n0:
+        budget.usd_spent, budget.tokens_spent, budget.n_charges = usd0, tok0, n0
 
     games = select_games(store, cfg, far_future)
     hint_ids = select_hint_games([g.game_id for g in games], cfg.hints.rate, cfg.hints.seed) \
@@ -77,70 +120,99 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
     manifest = {
         "run_id": run_id, "experiment": cfg.name, "status": cfg.status,
         "prereg": asdict(prereg), "mode": cfg.mode, "model": cfg.model, "effort": cfg.effort,
-        "seed": cfg.seed, "repeats": cfg.repeats, "variants": cfg.variants,
+        "backend": backend, "seed": cfg.seed, "repeats": cfg.repeats, "variants": cfg.variants,
         "prompt_version": agent_cfg.prompt_version,
         "prompt_bundle_hash": prompts.bundle_hash(agent_cfg.prompt_version),
         "data_snapshot": store.snapshot_hash, "data_source": store.source,
         "n_games_selected": len(games), "hint_game_ids": sorted(hint_ids),
-        "budget": cfg.budget.model_dump(), "started_at": datetime.now(UTC).isoformat(),
-        "forecast_lab_version": __version__, "python": platform.python_version(),
-        "config": json.loads(cfg.model_dump_json()),
+        "budget": cfg.budget.model_dump(), "forecast_lab_version": __version__,
+        "python": platform.python_version(), "config": json.loads(cfg.model_dump_json()),
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if resume_dir is not None:
+        manifest["started_at"] = old["started_at"]
+        manifest["resumes"] = old.get("resumes", []) + [datetime.now(UTC).isoformat()]
+    else:
+        manifest["started_at"] = datetime.now(UTC).isoformat()
 
-    n_done = 0
-    for g in games:
-        as_of = g.tipoff_utc - lead
-        hint = None
-        if g.game_id in hint_ids:
-            hint = make_hint(store, g, as_of, masker, cfg.hints.seed)
-            assert hint is None or verify_false(store, g, as_of, hint)
-        game_records: dict[int, dict] = {}
-        logged = 0
-        for r in range(cfg.repeats):
-            for v in cfg.variants:
-                if v == "D" and g.game_id not in hint_ids:
-                    continue  # D is defined only on the hint subset; pair is A on same game
-                if v == "D" and hint is None:
-                    ledger.append({"kind": "skip", "run_id": run_id, "game_id": g.game_id,
-                                   "variant": "D", "repeat": r,
-                                   "reason": "no verifiably-false hint template applied"})
+    def save(stop: str | None) -> None:
+        recs = ledger.records()
+        usd, tok = _spent(recs)
+        manifest.update({
+            "updated_at": datetime.now(UTC).isoformat(),
+            "n_predictions": sum(1 for r in recs if r.get("kind") == "agent"),
+            "n_outcomes": len(outcomes.records()),
+            "usd_spent": round(usd, 6), "tokens_spent": tok,
+            "stopped_reason": stop,
+        })
+        (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    save("running")
+    stop: str | None = None
+    try:
+        for g in games:
+            as_of = g.tipoff_utc - lead
+            hint = None
+            if g.game_id in hint_ids:
+                hint = make_hint(store, g, as_of, masker, cfg.hints.seed)
+                assert hint is None or verify_false(store, g, as_of, hint)
+            complete = True
+            for r in range(cfg.repeats):
+                for v in cfg.variants:
+                    if v == "D" and g.game_id not in hint_ids:
+                        continue  # D only on the hint subset; its pair is A on the same game
+                    if (g.game_id, v, r) in done:
+                        continue
+                    if v == "D" and hint is None:
+                        ledger.append({"kind": "skip", "run_id": run_id,
+                                       "game_id": g.game_id, "variant": "D", "repeat": r,
+                                       "reason": "no verifiably-false hint template applied"})
+                        continue
+                    if not budget.can_afford_next():
+                        complete = False
+                        break
+                    rec = predict(llm, store, g, as_of, v, ctx, memory=memories[r],
+                                  hint=hint, repeat=r)
+                    ledger.append(rec)
+                    budget.charge(rec["cost_usd"], sum(rec["tokens"].values()))
+                    if v == "B":
+                        b_records[(g.game_id, r)] = rec
+            if not complete:
+                stop = budget.stopped_reason
+                break  # never reveal a game whose predictions are incomplete
+
+            # ---- reveal (only after every prediction for this game is on disk)
+            result = store.reveal(g.game_id,
+                                  clock=store.reveal(g.game_id, far_future).available_at)
+            if g.game_id not in revealed:
+                outcomes.append({"game_id": g.game_id, "home_win": result.home_win,
+                                 "home_pts": result.home_pts, "away_pts": result.away_pts,
+                                 "revealed_at": result.available_at.isoformat(),
+                                 "run_id": run_id,
+                                 "written_at": datetime.now(UTC).isoformat()})
+                revealed.add(g.game_id)
+
+            # ---- memory update (only after reveal)
+            for r in range(cfg.repeats):
+                rec = b_records.get((g.game_id, r))
+                note_id = f"{run_id}:{g.game_id}:r{r}"
+                if rec is None or rec["prob"] is None or note_id in noted:
                     continue
-                if not budget.can_afford_next():
-                    break
-                rec = predict(llm, store, g, as_of, v, ctx, memory=memories[r], hint=hint,
-                              repeat=r)
-                ledger.append(rec)
-                budget.charge(rec["cost_usd"], sum(rec["tokens"].values()))
-                n_done += 1
-                logged += 1
-                if v == "B":
-                    game_records[r] = rec
-        if logged == 0 and budget.stopped_reason:
-            break
-
-        # ---- reveal (after all predictions for this game are on disk)
-        result = store.reveal(g.game_id, clock=store.reveal(g.game_id, far_future).available_at)
-        outcomes.append({"game_id": g.game_id, "home_win": result.home_win,
-                         "home_pts": result.home_pts, "away_pts": result.away_pts,
-                         "revealed_at": result.available_at.isoformat(), "run_id": run_id,
-                         "written_at": datetime.now(UTC).isoformat()})
-
-        # ---- memory update (only after reveal)
-        for r, rec in game_records.items():
-            if rec["prob"] is None:
-                continue
-            text, usage, cost = write_note(llm, note_summary(rec, result.home_win, masker),
-                                           agent_cfg.prompt_version)
-            budget.charge(cost, usage.total)
-            if text:
-                memories[r].add(Note(f"{run_id}:{g.game_id}:r{r}", result.available_at,
-                                     g.game_id, masker.text(text)))
-        if budget.stopped_reason:
-            break
-
-    manifest |= {"finished_at": datetime.now(UTC).isoformat(), "n_predictions": n_done,
-                 "usd_spent": round(budget.usd_spent, 6), "tokens_spent": budget.tokens_spent,
-                 "stopped_reason": budget.stopped_reason or "completed"}
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+                text, usage, cost = write_note(llm, note_summary(rec, result.home_win, masker),
+                                               agent_cfg.prompt_version)
+                budget.charge(cost, usage.total)
+                ledger.append({"kind": "note", "run_id": run_id, "note_id": note_id,
+                               "game_id": g.game_id, "repeat": r, "text": text,
+                               "created_at": result.available_at.isoformat(),
+                               "cost_usd": cost, "tokens": usage.to_dict()})
+                noted.add(note_id)
+                if text:
+                    memories[r].add(Note(note_id, result.available_at, g.game_id,
+                                         masker.text(text)))
+            save("running")
+            if budget.stopped_reason:
+                stop = budget.stopped_reason
+                break
+    except UsageLimitReached as e:
+        stop = f"subscription usage limit reached (resume later with --resume): {e}"
+    save(stop or "completed")
     return out

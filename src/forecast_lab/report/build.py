@@ -84,7 +84,8 @@ def section_run(run_dir: Path, runs_root: Path, fig_dir: Path) -> str:
            if manifest["prereg"]["exploratory"] else
            f"{manifest['status']}, config sha256 `{manifest['prereg']['config_sha256'][:16]}`, "
            f"commit `{(manifest['prereg']['git_commit'] or '')[:10]}`"),
-        f"- **Model:** `{manifest['model']}` (effort `{manifest['effort']}`), prompts "
+        f"- **Model:** `{manifest['model']}` (effort `{manifest['effort']}`, backend "
+        f"`{manifest.get('backend', 'api')}`), prompts "
         f"`{manifest['prompt_version']}` (bundle `{manifest['prompt_bundle_hash']}`), "
         f"repeats {manifest['repeats']}",
         f"- **Data snapshot:** `{manifest['data_snapshot']}`; games selected "

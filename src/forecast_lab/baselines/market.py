@@ -56,13 +56,15 @@ def devig_two_way(price_home: float, price_away: float) -> float:
 
 def parse_odds_api(events: list[dict], games: list[ScheduledGame], now: datetime,
                    ) -> dict[str, MarketQuote]:
-    by_key = {(g.home, g.away, g.tipoff_utc.date()): g for g in games}
     out: dict[str, MarketQuote] = {}
     for ev in events:
         home = FULL_NAME_TO_TRI.get(ev.get("home_team", ""))
         away = FULL_NAME_TO_TRI.get(ev.get("away_team", ""))
         start = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
-        game = by_key.get((home, away, start.date()))
+        # Same teams, listed start within 3h of the official tip-off (books list start times
+        # a few minutes off, so calendar-date matching breaks near midnight UTC).
+        game = next((g for g in games if g.home == home and g.away == away
+                     and abs((g.tipoff_utc - start).total_seconds()) <= 3 * 3600), None)
         if game is None:
             continue
         probs = []

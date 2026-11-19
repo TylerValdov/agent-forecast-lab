@@ -119,7 +119,7 @@ def test_market_devig_and_parse():
     assert np.isclose(devig_two_way(1.5, 2.6), (1 / 1.5) / (1 / 1.5 + 1 / 2.6))
     from forecast_lab.data.schema import ScheduledGame
 
-    tip = datetime(2030, 1, 2, 0, 30, tzinfo=UTC)
+    tip = datetime(2030, 1, 1, 23, 55, tzinfo=UTC)  # listed 00:30 next UTC day by the book
     g = ScheduledGame(game_id="G", season="2029-30", game_date=tip.date(), tipoff_utc=tip,
                       home="BOS", away="NYK")
     # Synthetic Odds-API-shaped payload (test fixture, not real odds).

@@ -140,6 +140,13 @@ def test_anonymized_tool_outputs_leak_no_real_names(tiny_store):
         assert not re.search(r"\b20\d\d-\d\d-\d\d\b", out)  # no calendar dates
 
 
+def test_leak_check_ignores_ordinary_words():
+    m = Masker("salt")
+    assert m.leaked_terms("home court plus noisy margins nets out near 3; heat check") == []
+    assert m.leaked_terms("the Nets won") == ["Nets"]
+    assert m.leaked_terms("magic number, thunder, kings of the hill") == []
+
+
 def test_masker_scrubs_free_text():
     m = Masker("salt")
     text = "The Boston Celtics beat the Knicks; LAL rested. Player A is out."

@@ -89,9 +89,9 @@ class Masker:
         """Real names that appear in `s` (for tests and runtime assertions)."""
         found = []
         for term in self._terms:
-            pattern = rf"\b{re.escape(term.strip())}\b"
-            flags = 0 if term.isupper() else re.IGNORECASE
-            if re.search(pattern, s, flags):
+            # Case-sensitive: team names are proper nouns, and ordinary words ("nets out",
+            # "heat", "magic", "thunder") must not count as leaks.
+            if re.search(rf"\b{re.escape(term.strip())}\b", s):
                 found.append(term.strip())
         return found + [p for p in self._players if p in s]
 

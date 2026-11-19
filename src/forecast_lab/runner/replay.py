@@ -214,5 +214,8 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
                 break
     except UsageLimitReached as e:
         stop = f"subscription usage limit reached (resume later with --resume): {e}"
+    except BaseException as e:  # record the crash, never leave the manifest at "running"
+        save(f"error: {type(e).__name__}: {e} (fix, then --resume)")
+        raise
     save(stop or "completed")
     return out

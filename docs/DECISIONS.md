@@ -194,3 +194,32 @@ predict-before-reveal and the memory time-gating hold across a resume (tested). 
 costs are now written to the ledger as `kind: note` records, so spending can be audited.
 
 **D30. `.env` is loaded by the CLI and never overrides variables that are already set.**
+
+## Changes made because of the pilot (pilot_v1, run 20261122T215449Z-5807fc)
+
+The pilot ran on the `claude_code` backend over 93 of its 100 games and stopped at its
+5M-token cap. It is exploratory, and its scores are not evidence. It was run to find harness
+problems, and it found three. Each one is a fix to the harness, not a change to a
+hypothesis, a variant or a prompt (the prompt bundle is unchanged, `v1`).
+
+**P1. The `claude_code` backend now nudges like the API loop.** In variant C, 12.9% of
+predictions submitted a draft, received the critique prompt and then ended the turn without
+a final forecast. The API loop would have sent `NO_SUBMIT_NUDGE`, but the one-shot CLI call
+could not. Each prediction is now one multi-turn session (`--input-format stream-json`),
+and a turn that ends without a final forecast gets the same nudge, at most twice. Because
+failures are scored as 0.5 (D16), the pilot's C-vs-A Brier gap is mostly this bug. On the
+81 games where C finished, critique moved Brier from 0.1999 to 0.1984. Calls the agent makes
+after its final submission are now logged as `after_final` and are no longer counted as tool
+errors.
+
+**P2. The leak check gave false positives on ordinary words.** A memory note said "nets
+out", which the case-insensitive check read as the Nets, and the run stopped. Team names
+are proper nouns, so the check is now case-sensitive. The masker's scrubbing already was.
+Crashes are now recorded in the manifest. The run was resumed with no lost or duplicated
+work.
+
+**P3. Token caps count cached-prompt reads.** Claude Code re-reads its cached context on
+every turn, so a prediction is about 13-19k tokens, most of them cache reads. The pilot's 5M
+cap ended it at 93 games. The cap was left as configured and the stop is reported. Planning
+figure for `main_v1` (600 games, about 1,920 predictions plus 600 notes): about 35M tokens
+against a 40M cap.

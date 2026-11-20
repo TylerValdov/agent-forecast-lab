@@ -49,8 +49,9 @@ class ForecastSession:
     def call(self, name: str, args: dict) -> tuple[str, bool]:
         self.n_calls += 1
         event = "tool"
-        if self.final is not None:
+        if self.final is not None:  # extra calls after the final answer: ignored, not errors
             out, err = json.dumps({"error": "Forecast already submitted; stop now."}), True
+            event = "after_final"
         elif self.n_calls > self.max_calls:
             out, err, event = json.dumps({"error": "Step limit reached."}), True, "step_limit"
         elif name == "submit_forecast":

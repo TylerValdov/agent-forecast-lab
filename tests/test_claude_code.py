@@ -101,6 +101,31 @@ def test_backend_critique_and_failures(tiny_store, monkeypatch):
         llm.run_forecast(toolbox(tiny_store), task, AgentConfig(), critique=False)
 
 
+def test_backend_nudges_like_the_api_loop(tiny_store, monkeypatch):
+    """Regression for the pilot: C stopped after its draft (13% 'no_submit'). The backend
+    now sends the same nudge the API loop sends, inside the same session."""
+    llm = ClaudeCodeLLM("claude-haiku-5-5", command=FAKE)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "critique_stall")
+    res = llm.run_forecast(toolbox(tiny_store), "tools: BOS, MIA.", AgentConfig(), critique=True)
+    assert (res.draft_prob, res.prob, res.failure) == (0.7, 0.65, None)
+    backend = res.trajectory[-1]
+    assert backend["nudges"] == 1 and backend["result_subtypes"] == ["success", "success"]
+    assert any(t["type"] == "nudge" for t in res.trajectory)
+    assert res.usage.input_tokens == 2000  # usage summed over both turns
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "silent")
+    res = llm.run_forecast(toolbox(tiny_store), "tools: BOS, MIA.", AgentConfig(), critique=False)
+    assert res.prob is None and res.failure == "no_submit"
+    assert res.trajectory[-1]["nudges"] == 2  # bounded
+
+
+def test_trajectory_records_tool_inputs(tiny_store, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "submit")
+    llm = ClaudeCodeLLM("claude-haiku-5-5", command=FAKE)
+    res = llm.run_forecast(toolbox(tiny_store), "tools: BOS, MIA.", AgentConfig(), critique=False)
+    calls = [t for t in res.trajectory if t["type"] == "tool_result"]
+    assert calls[0]["input"] == {"team": "BOS", "last_n": 5}
+
+
 def test_backend_masks_in_anonymized_mode(tiny_store, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "submit")
     tb = toolbox(tiny_store, masked=True)

@@ -26,10 +26,12 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from forecast_lab.agents.agent import (
     FAIL_API,
     FAIL_REFUSAL,
     FAIL_STEP_LIMIT,
+    NO_SUBMIT_NUDGE,
     AgentConfig,
     AgentResult,
 )
@@ -49,6 +52,7 @@ FAIL_TIMEOUT = "timeout"
 FAIL_NO_SUBMIT = "no_submit"
 FAIL_USAGE_LIMIT = "usage_limit"
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
+MAX_NUDGES = 2  # extra user turns when a turn ends without a final forecast
 _SECRET_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
@@ -92,6 +96,7 @@ def events_to_trajectory(task: str, events: list[dict]) -> list[dict]:
     """Stream-json events -> the same trajectory shape the API backend logs."""
     traj: list[dict] = [{"type": "task", "text": task}]
     names: dict[str, str] = {}
+    inputs: dict[str, dict] = {}
     step = 0
     for e in events:
         msg = e.get("message") or {}
@@ -101,8 +106,11 @@ def events_to_trajectory(task: str, events: list[dict]) -> list[dict]:
             for b in content:
                 if b.get("type") == "tool_use":
                     names[b["id"]] = b["name"].removeprefix(TOOL_PREFIX)
+                    inputs[b["id"]] = b.get("input")
             traj.append({"type": "assistant", "step": step, "content": content,
                          "stop_reason": msg.get("stop_reason")})
+        elif e.get("type") == "nudge":
+            traj.append({"type": "nudge", "text": e["text"]})
         elif e.get("type") == "user":
             for b in msg.get("content") or []:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
@@ -111,6 +119,7 @@ def events_to_trajectory(task: str, events: list[dict]) -> list[dict]:
                         out = " ".join(x.get("text", "") for x in out if isinstance(x, dict))
                     traj.append({"type": "tool_result",
                                  "name": names.get(b.get("tool_use_id"), "?"),
+                                 "input": inputs.get(b.get("tool_use_id")),
                                  "output": out, "is_error": bool(b.get("is_error"))})
     return traj
 
@@ -209,8 +218,19 @@ class ClaudeCodeLLM:
                            result.get("stop_reason") or "end_turn", _usage(result),
                            init.get("model", self.model), latency)
 
+    def _session_cmd(self, sys_file: Path, cfg_file: Path) -> list[str]:
+        return [*self.command, "-p", "--input-format", "stream-json",
+                "--output-format", "stream-json", "--verbose",
+                "--model", self.model, "--effort", self.effort,
+                "--tools", "", "--setting-sources", "", "--strict-mcp-config",
+                "--no-session-persistence", "--system-prompt-file", str(sys_file),
+                "--mcp-config", str(cfg_file), "--allowedTools", f"mcp__{SERVER_NAME}",
+                "--permission-mode", "dontAsk"]
+
     def run_forecast(self, toolbox: NBAToolbox, task: str, cfg: AgentConfig,
                      critique: bool) -> AgentResult:
+        """One multi-turn Claude Code session. If a turn ends without a final forecast, the
+        agent gets the same nudge the API backend sends (at most MAX_NUDGES times)."""
         workdir = Path(tempfile.mkdtemp(dir=self._tmp))
         log_path = workdir / "tool_log.jsonl"
         max_calls = 2 * (cfg.max_steps + (cfg.critique_extra_steps if critique else 0))
@@ -225,28 +245,62 @@ class ClaudeCodeLLM:
             "log_path": str(log_path),
         }
         (workdir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
-        mcp = {"mcpServers": {SERVER_NAME: {
-            "command": sys.executable, "args": ["-m", "forecast_lab.agents.mcp_server",
-                                           str(workdir / "context.json")]}}}
-        system = prompts.load("system", cfg.prompt_version)
+        cfg_file, sys_file = workdir / "mcp.json", workdir / "system.md"
+        cfg_file.write_text(json.dumps({"mcpServers": {SERVER_NAME: {
+            "command": sys.executable,
+            "args": ["-m", "forecast_lab.agents.mcp_server", str(workdir / "context.json")],
+        }}}), encoding="utf-8")
+        sys_file.write_text(prompts.load("system", cfg.prompt_version), encoding="utf-8")
 
-        usage, latency, failure, events = Usage(), 0.0, None, []
+        def read_log() -> list[dict]:
+            if not log_path.exists():
+                return []
+            return [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines()
+                    if x.strip()]
+
+        events: list[dict] = []
+        results: list[dict] = []
+        nudges = 0
+        failure: str | None = None
+        t0 = time.perf_counter()
+        deadline = t0 + self.timeout_s
+        session = _Session(self._session_cmd(sys_file, cfg_file), workdir, self._env())
         try:
-            events, latency = self._run(system, task, mcp, workdir)
+            session.send(task)
+            while True:
+                turn = session.until_result(deadline)
+                events += turn
+                result = turn[-1]
+                results.append(result)
+                if len(results) == 1:
+                    init, _ = self._split(events)
+                    check_isolation(init, expect_tools=True)
+                    self.last_init = init
+                if _is_usage_limit(result):
+                    raise UsageLimitReached(result.get("result", ""))
+                log = read_log()
+                done = (any(r["event"] == "final" for r in log)
+                        or any(r["event"] == "step_limit" for r in log)
+                        or result.get("is_error") or result.get("stop_reason") == "refusal")
+                if done or nudges >= MAX_NUDGES:
+                    break
+                session.send(NO_SUBMIT_NUDGE)
+                nudges += 1
+                events.append({"type": "nudge", "text": NO_SUBMIT_NUDGE})
         except TimeoutError:
             failure = FAIL_TIMEOUT
         except LLMError:
             failure = FAIL_API
-        init, result = self._split(events)
-        if events:
-            check_isolation(init, expect_tools=True)
-            self.last_init = init
-            if _is_usage_limit(result):
-                raise UsageLimitReached(result.get("result", ""))
-            usage = _usage(result)
+        finally:
+            session.close()
+        latency = time.perf_counter() - t0
 
-        log = [json.loads(x) for x in log_path.read_text(encoding="utf-8").splitlines()
-               if x.strip()] if log_path.exists() else []
+        init, _ = self._split(events)
+        result = results[-1] if results else {}
+        usage = Usage()
+        for r in results:
+            usage += _usage(r)
+        log = read_log()
         final = next((r for r in log if r["event"] == "final"), None)
         draft = next((r for r in log if r["event"] == "draft"), None)
         if final is None and failure is None:
@@ -263,8 +317,10 @@ class ClaudeCodeLLM:
         trajectory.append({"type": "backend", "backend": self.backend,
                            "claude_code_version": init.get("claude_code_version"),
                            "model_reported": init.get("model"),
-                           "api_equivalent_cost_reported": result.get("total_cost_usd"),
-                           "result_subtype": result.get("subtype"),
+                           "nudges": nudges,
+                           "api_equivalent_cost_reported": sum(
+                               r.get("total_cost_usd") or 0 for r in results),
+                           "result_subtypes": [r.get("subtype") for r in results],
                            "tool_log": log})
         return AgentResult(
             prob=final["prob"] if final else None,
@@ -272,10 +328,72 @@ class ClaudeCodeLLM:
             draft_prob=draft["prob"] if draft else None,
             draft_reasoning=draft["reasoning"] if draft else None,
             failure=failure if final is None else None,
-            steps=int(result.get("num_turns") or 0),
+            steps=sum(int(r.get("num_turns") or 0) for r in results),
             usage=usage, cost_usd=cost_usd(self.model, usage), latency_s=latency,
             trajectory=trajectory,
             invalid_submissions=sum(r["event"] == "invalid_submission" for r in log),
             tool_errors=sum(1 for r in log if r["is_error"] and r["event"] == "tool"),
         )
 
+
+class _Session:
+    """A long-lived `claude -p --input-format stream-json` process: send user messages,
+    read events until each turn's `result` event, with a wall-clock deadline."""
+
+    def __init__(self, cmd: list[str], cwd: Path, env: dict[str, str]) -> None:
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                     cwd=cwd, env=env)
+        self.lines: queue.Queue[str | None] = queue.Queue()
+        self.stderr: list[str] = []
+        threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._drain_err, daemon=True).start()
+
+    def _pump(self) -> None:
+        for line in self.proc.stdout:
+            self.lines.put(line)
+        self.lines.put(None)
+
+    def _drain_err(self) -> None:
+        for line in self.proc.stderr:
+            self.stderr.append(line)
+
+    def send(self, text: str) -> None:
+        msg = {"type": "user", "message": {"role": "user", "content": text}}
+        try:
+            self.proc.stdin.write(json.dumps(msg) + "\n")
+            self.proc.stdin.flush()
+        except OSError as e:
+            raise LLMError(f"claude session closed: {e}") from e
+
+    def until_result(self, deadline: float) -> list[dict]:
+        events: list[dict] = []
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise TimeoutError("claude session timed out")
+            try:
+                line = self.lines.get(timeout=remaining)
+            except queue.Empty as e:
+                raise TimeoutError("claude session timed out") from e
+            if line is None:
+                tail = "".join(self.stderr)[-500:]
+                raise LLMError(f"claude exited before finishing the turn: {tail}")
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            events.append(e)
+            if e.get("type") == "result":
+                return events
+
+    def close(self) -> None:
+        try:
+            if self.proc.stdin and not self.proc.stdin.closed:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            self.proc.kill()

@@ -1,0 +1,24 @@
+# Harness check (not an experiment): confirms the pilot fix P1 (claude_code backend nudges
+# after a draft) on 20 fresh games. Measures only variant C's failure and revision rates.
+name: check_c_v1
+description: "Check that variant C no longer stops after its draft on the claude_code backend."
+status: exploratory
+domain: nba
+mode: replay_anonymized
+model: claude-haiku-5-5
+effort: low
+backend: claude_code
+seed: 2
+repeats: 1
+variants: [C]
+lead_minutes: 60
+games:
+  start: 2026-01-01
+  end: 2026-04-13
+  sample: 20
+  sample_seed: 12
+budget: {usd: 1.00, tokens: 1500000}
+evaluation:
+  reference_baseline: elo
+  min_n: 20
+  comparisons: []

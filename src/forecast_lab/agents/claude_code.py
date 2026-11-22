@@ -228,7 +228,7 @@ class ClaudeCodeLLM:
                 "--permission-mode", "dontAsk"]
 
     def run_forecast(self, toolbox: NBAToolbox, task: str, cfg: AgentConfig,
-                     critique: bool) -> AgentResult:
+                     critique: bool, system_extra: str | None = None) -> AgentResult:
         """One multi-turn Claude Code session. If a turn ends without a final forecast, the
         agent gets the same nudge the API backend sends (at most MAX_NUDGES times)."""
         workdir = Path(tempfile.mkdtemp(dir=self._tmp))
@@ -250,7 +250,10 @@ class ClaudeCodeLLM:
             "command": sys.executable,
             "args": ["-m", "forecast_lab.agents.mcp_server", str(workdir / "context.json")],
         }}}), encoding="utf-8")
-        sys_file.write_text(prompts.load("system", cfg.prompt_version), encoding="utf-8")
+        system = prompts.load("system", cfg.prompt_version)
+        if system_extra:
+            system = f"{system}\n\n{system_extra}"
+        sys_file.write_text(system, encoding="utf-8")
 
         def read_log() -> list[dict]:
             if not log_path.exists():

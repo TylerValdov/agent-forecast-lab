@@ -97,9 +97,15 @@ def cmd_run(a) -> None:
     if cfg.mode == "replay_raw":
         print("NOTE: replay_raw LLM results are contaminated and never primary evidence.")
     store = _load_store()
+    post_store = None
+    if cfg.recall_probe:  # control games after the training cutoff: current season, cached
+        from forecast_lab.data.nba_loader import current_season
+
+        post_store = _load_store(seasons=[current_season()])
     out = run_replay(cfg, prereg, store, _llm(cfg, a.fake_llm, a.backend),
                      out_root=Path("runs_fake") if a.fake_llm else Path("runs"),
-                     resume_dir=Path(a.resume) if a.resume else None)
+                     resume_dir=Path(a.resume) if a.resume else None,
+                     post_store=post_store)
     print(json.dumps(json.loads((out / "manifest.json").read_text())
                      | {"config": "...", "hint_game_ids": "..."}, indent=2))
 

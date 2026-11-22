@@ -36,6 +36,7 @@ from forecast_lab.runner.budget import BudgetGuard
 from forecast_lab.runner.config import ExperimentConfig
 from forecast_lab.runner.predict import RunContext, predict
 from forecast_lab.runner.prereg import PreregRecord
+from forecast_lab.runner.probe import ask, probe_items
 
 
 def select_games(store: DataStore, cfg: ExperimentConfig, clock_end: datetime
@@ -63,15 +64,20 @@ class ResumeError(RuntimeError):
 
 
 def _spent(records: list[dict]) -> tuple[float, int]:
-    usd = sum(r.get("cost_usd") or 0.0 for r in records if r.get("kind") in ("agent", "note"))
+    usd = sum(r.get("cost_usd") or 0.0 for r in records
+              if r.get("kind") in ("agent", "note", "probe"))
     tok = sum(sum((r.get("tokens") or {}).values()) for r in records
-              if r.get("kind") in ("agent", "note"))
+              if r.get("kind") in ("agent", "note", "probe"))
     return usd, tok
 
 
 def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
                llm: LLMClient, out_root: Path = Path("runs"),
-               resume_dir: Path | None = None) -> Path:
+               resume_dir: Path | None = None,
+               post_store: DataStore | None = None,
+               clock: datetime | None = None) -> Path:
+    """`post_store` holds games after the model's training cutoff, used only by the
+    recall probe's control group (cfg.recall_probe)."""
     if cfg.mode == "live":
         raise ValueError("use the live runner for mode=live")
     backend = getattr(llm, "backend", "api")
@@ -109,7 +115,7 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
     revealed = {r["game_id"] for r in outcomes.records()}
     budget = BudgetGuard(cfg.budget.usd, cfg.budget.tokens)
     usd0, tok0 = _spent(prior)
-    n0 = sum(1 for r in prior if r.get("kind") in ("agent", "note"))
+    n0 = sum(1 for r in prior if r.get("kind") in ("agent", "note", "probe"))
     if n0:
         budget.usd_spent, budget.tokens_spent, budget.n_charges = usd0, tok0, n0
 
@@ -127,6 +133,13 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
         "n_games_selected": len(games), "hint_game_ids": sorted(hint_ids),
         "budget": cfg.budget.model_dump(), "forecast_lab_version": __version__,
         "python": platform.python_version(), "config": json.loads(cfg.model_dump_json()),
+        "extra_prompt_hashes": {
+            **({"guardrail": prompts.prompt_hash("guardrail", agent_cfg.prompt_version)}
+               if "G" in cfg.variants else {}),
+            **({"recall_probe": prompts.prompt_hash("recall_probe", agent_cfg.prompt_version)}
+               if cfg.recall_probe else {}),
+        },
+        "post_cutoff_snapshot": post_store.snapshot_hash if post_store else None,
     }
     if resume_dir is not None:
         manifest["started_at"] = old["started_at"]
@@ -212,6 +225,24 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
             if budget.stopped_reason:
                 stop = budget.stopped_reason
                 break
+
+        # ---- recall probe (contamination audit): tool-free "what was the score?"
+        if cfg.recall_probe and not stop:
+            rp = cfg.recall_probe
+            finished = [store.reveal(g.game_id, far_future) for g in games]
+            items = probe_items(finished, post_store, rp.n_pre, rp.n_post, rp.post_after,
+                                rp.seed, clock or datetime.now(UTC))
+            probed = {(r["game_id"], r["group"]) for r in prior if r.get("kind") == "probe"}
+            for item in items:
+                if (item.game.game_id, item.group) in probed:
+                    continue
+                if not budget.can_afford_next():
+                    stop = budget.stopped_reason
+                    break
+                rec = ask(llm, item, agent_cfg.prompt_version) | {"run_id": run_id}
+                ledger.append(rec)
+                budget.charge(rec["cost_usd"], sum((rec.get("tokens") or {}).values()))
+            save("running")
     except UsageLimitReached as e:
         stop = f"subscription usage limit reached (resume later with --resume): {e}"
     except BaseException as e:  # record the crash, never leave the manifest at "running"

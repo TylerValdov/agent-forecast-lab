@@ -223,3 +223,29 @@ every turn, so a prediction is about 13-19k tokens, most of them cache reads. Th
 cap ended it at 93 games. The cap was left as configured and the stop is reported. Planning
 figure for `main_v1` (600 games, about 1,920 predictions plus 600 notes): about 35M tokens
 against a 40M cap.
+
+## Contamination audit (RQ5)
+
+**D31. Contamination is measured, not only mitigated.** The owner is willing to use past
+seasons, including ones that may be in the model's training data. A prompt cannot make a
+model forget, and a model cannot reliably tell which of its beliefs came from memorized
+results, so a "don't use what you remember" instruction is treated as a hypothesis to test,
+not as a safeguard. `contamination_v1` runs three variants on the same 300 games:
+- **A:** masked team names and dates;
+- **R (new):** real team names and dates;
+- **G (new):** real names plus the guardrail prompt `guardrail_v1.md`.
+
+A tool-free recall probe (`recall_probe_v1.md`) asks for exact final scores. The control
+group is 100 games played after the model's reported training cutoff (June 2026, as Claude
+Code reports for Haiku 5.5).
+
+**D32. How to read the results, fixed before running.** R − A combines memorized outcomes
+with legitimate general knowledge of the teams, such as their reputations and rosters.
+Exact-score recall is the measure that separates the two. Winner accuracy is not used,
+because favorites can be picked without memorizing anything. Every agent record stores its
+own `mode`: R and G records are `replay_raw`, even inside an anonymized run.
+
+**D33. Prompt hashing.** `bundle_hash` now covers the three core prompts by name. It gives
+the same value as before for `v1` (checked against main_v1's manifest: `f7c92fa94435f16e`).
+Prompts used only by some variants or probes are hashed separately in the manifest
+(`extra_prompt_hashes`), so adding one does not change the bundle hash of earlier runs.

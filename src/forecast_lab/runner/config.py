@@ -11,7 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 Mode = Literal["live", "replay_anonymized", "replay_raw"]
-VariantId = Literal["A", "B", "C", "D"]
+VariantId = Literal["A", "B", "C", "D", "R", "G"]
 
 
 class _Strict(BaseModel):
@@ -39,6 +39,18 @@ class MemorySettings(_Strict):
 
 class HintSettings(_Strict):
     rate: float = Field(0.2, ge=0, le=1)
+    seed: int = 0
+
+
+class RecallProbe(_Strict):
+    """Tool-free 'what was the final score?' questions (contamination audit, RQ5).
+    `n_pre` games are sampled from the experiment's games (possibly in training data);
+    `n_post` from games after `post_after` (after the model's training cutoff), as the
+    no-memory control."""
+
+    n_pre: int = 150
+    n_post: int = 100
+    post_after: date
     seed: int = 0
 
 
@@ -80,6 +92,7 @@ class ExperimentConfig(_Strict):
     agent: AgentSettings = AgentSettings()
     memory: MemorySettings = MemorySettings()
     hints: HintSettings = HintSettings()
+    recall_probe: RecallProbe | None = None
     budget: Budget
     evaluation: Evaluation = Evaluation()
 

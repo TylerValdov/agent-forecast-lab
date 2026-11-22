@@ -26,6 +26,7 @@ All of these are paired comparisons on the same games, set out in advance in
 | RQ2 | Does draft → self-critique → revise improve Brier, or only raise confidence? | **C** vs **A** |
 | RQ3 | How often does a confident but *false* hint override what the data shows? | **D** vs **A** |
 | RQ4 *(stretch)* | Do typed tools beat a free-form code-execution tool? | E vs A |
+| RQ5 | Do forecasts on past games lean on memorized outcomes, and does telling the agent to ignore them help? | **R** (real names) vs **A** (masked); **G** (R + guardrail) vs **R**; plus a no-tools recall probe |
 
 **A** is the base agent: tools plus `submit_forecast`. Every variant is also compared with
 the baselines: always 0.5, the home-win base rate, Elo, logistic regression, gradient

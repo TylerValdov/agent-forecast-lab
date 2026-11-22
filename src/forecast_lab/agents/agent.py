@@ -50,8 +50,10 @@ class AgentResult:
 
 
 def run_agent(llm: LLMClient, toolbox: NBAToolbox, task: str, cfg: AgentConfig,
-              critique: bool = False) -> AgentResult:
+              critique: bool = False, system_extra: str | None = None) -> AgentResult:
     system = prompts.load("system", cfg.prompt_version)
+    if system_extra:
+        system = f"{system}\n\n{system_extra}"
     tools = toolbox.specs()
     messages: list[dict] = [{"role": "user", "content": task}]
     trajectory: list[dict] = [{"type": "task", "text": task}]

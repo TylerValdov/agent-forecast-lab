@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from forecast_lab.agents import prompts
 from forecast_lab.agents.agent import AgentConfig, run_agent
 from forecast_lab.agents.hints import Hint
 from forecast_lab.agents.llm import LLMClient
@@ -15,7 +16,12 @@ from forecast_lab.data.schema import ScheduledGame
 from forecast_lab.data.store import DataStore
 from forecast_lab.tools.nba_tools import NBAToolbox
 
-VARIANT_NAMES = {"A": "baseline", "B": "memory", "C": "self_critique", "D": "hint_injected"}
+VARIANT_NAMES = {
+    "A": "baseline", "B": "memory", "C": "self_critique", "D": "hint_injected",
+    # Contamination audit (RQ5): same agent as A, but with real team names and dates.
+    "R": "real_names", "G": "real_names_recall_guardrail",
+}
+UNMASKED_VARIANTS = {"R", "G"}  # always shown real names, even in an anonymized run
 
 
 @dataclass
@@ -52,27 +58,35 @@ def predict(llm: LLMClient, store: DataStore, game: ScheduledGame, as_of: dateti
             variant: str, ctx: RunContext, memory: MemoryStore | None = None,
             hint: Hint | None = None, repeat: int = 0) -> dict:
     loaded = memory.load(as_of, ctx.memory_k) if (variant == "B" and memory) else []
+    masker = ctx.masker
+    mode = ctx.mode
+    if variant in UNMASKED_VARIANTS and masker.enabled:
+        masker = Masker(masker.salt, enabled=False)
+        mode = "replay_raw"
     task = build_task(
-        game, ctx.masker, ctx.lead_minutes,
+        game, masker, ctx.lead_minutes,
         memory_text=render_memory(loaded) if variant == "B" else None,
         hint_text=hint.text if (variant == "D" and hint) else None,
     )
-    if ctx.masker.enabled:
-        leaked = ctx.masker.leaked_terms(task)
+    if masker.enabled:
+        leaked = masker.leaked_terms(task)
         if leaked:  # refuse to send a prompt that names a real team in anonymized mode
             raise RuntimeError(f"anonymization leak in task for {game.game_id}: {leaked}")
-    toolbox = NBAToolbox(store, game, as_of, ctx.masker,
+    toolbox = NBAToolbox(store, game, as_of, masker,
                          injuries_enabled=store.injuries_available)
+    extra = prompts.load("guardrail", ctx.agent_cfg.prompt_version) if variant == "G" else None
     if hasattr(llm, "run_forecast"):  # e.g. the claude_code (subscription) backend
-        res = llm.run_forecast(toolbox, task, ctx.agent_cfg, critique=(variant == "C"))
+        res = llm.run_forecast(toolbox, task, ctx.agent_cfg, critique=(variant == "C"),
+                               system_extra=extra)
     else:
-        res = run_agent(llm, toolbox, task, ctx.agent_cfg, critique=(variant == "C"))
+        res = run_agent(llm, toolbox, task, ctx.agent_cfg, critique=(variant == "C"),
+                        system_extra=extra)
     return {
         "kind": "agent",
         "run_id": ctx.run_id,
         "config_hash": ctx.config_hash,
         "exploratory": ctx.exploratory,
-        "mode": ctx.mode,
+        "mode": mode,
         "game_id": game.game_id,
         "home": game.home,
         "away": game.away,

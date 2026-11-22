@@ -1,0 +1,57 @@
+# PRE-REGISTERED contamination audit (RQ5). Committing this file pre-registers it.
+#
+# Question: do LLM forecasts on past games lean on memorized outcomes, and can an instruction
+# stop that? Same 300 games from the 2025-26 season (possibly in the model's training data),
+# three agent variants, plus a tool-free recall probe.
+#   A = base agent, masked team names and dates (as in main_v1)
+#   R = same agent, REAL team names and dates
+#   G = R + an instruction to use only tool data and ignore remembered results
+# Recall probe: exact final score asked with no tools, for 150 of these games and for 100
+# games played after the model's reported training cutoff (June 2026) as the control.
+#
+# Hypotheses (two-sided, Holm-corrected across the 3 comparisons):
+#   H5a: R differs from A in Brier (real names change forecast quality).
+#   H5b: G differs from R in Brier (the guardrail changes forecasts).
+#   H5c: G differs from A in Brier (the guardrail fully removes the real-name effect).
+# Descriptive (not tested): probe exact-score rate, pre vs post cutoff.
+# Interpretation rule, fixed in advance: an R-A gap is attributed to memorized outcomes only
+# if the probe's pre-cutoff exact-score rate clearly exceeds the post-cutoff control;
+# otherwise it is attributed to general team knowledge (reputation), not recall.
+name: contamination_v1
+description: "Contamination audit: masked vs real names vs real names + recall guardrail, plus a recall probe."
+status: preregistered
+domain: nba
+mode: replay_anonymized   # A is masked; R and G always use real names (recorded per record)
+model: claude-haiku-5-5
+effort: low
+backend: api
+seed: 5
+repeats: 1
+variants: [A, R, G]
+lead_minutes: 60
+games:
+  start: 2025-11-15
+  end: 2026-04-13
+  sample: 300
+  sample_seed: 505
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v1
+recall_probe:
+  n_pre: 150
+  n_post: 100
+  post_after: 2026-10-01
+  seed: 7
+budget: {usd: 3.00, tokens: 15000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 250
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  comparisons:
+    - {a: R, b: A, rq: "RQ5a real names vs masked"}
+    - {a: G, b: R, rq: "RQ5b guardrail vs real names"}
+    - {a: G, b: A, rq: "RQ5c guardrail vs masked"}

@@ -153,9 +153,59 @@ def section_run(run_dir: Path, runs_root: Path, fig_dir: Path) -> str:
                          f"Pre-registered comparisons ({mode})")
         lines += [f"![comparisons]({fp.as_posix()})", ""]
 
+    lines += _section_contamination(preds, run_dir, base)
     lines += _section_critique(preds, outs) + _section_hints(preds, outs, ev["min_n"])
     lines += _section_memory(long) + _section_cost(preds, outs) + _section_failures(preds)
     return "\n".join(lines)
+
+
+def _section_contamination(preds, run_dir: Path, base) -> list[str]:
+    """RQ5: real names (R) vs masked (A), the recall guardrail (G), and the recall probe."""
+    out: list[str] = []
+    variants = set(preds["variant"]) if not preds.empty else set()
+    if variants & {"R", "G"}:
+        modes = preds.groupby("variant")["mode"].first().to_dict()
+        out += ["### RQ5: contamination audit", "",
+                "Variants in this run do not share one mode: "
+                + ", ".join(f"`{v}` = `{m}`" for v, m in sorted(modes.items()))
+                + ". R and G see real team names and dates; A sees masked ones. R − A "
+                "measures how much real names help (memorized outcomes **plus** legitimate "
+                "pre-game reputation knowledge); the recall probe below separates the two. "
+                "G − R measures whether an instruction to ignore remembered results "
+                "changes the forecasts.", ""]
+    probes = [r for r in Ledger(run_dir / "predictions.jsonl").records()
+              if r.get("kind") == "probe"]
+    if not probes:
+        return out
+    df = pd.DataFrame(probes)
+    if not out:
+        out += ["### RQ5: contamination audit", ""]
+    rows = []
+    for group, g in df.groupby("group"):
+        ok = g[g["parsed"] == True]  # noqa: E712
+        rows.append({
+            "group": {"pre": "experiment games (possibly in training data)",
+                      "post": "after training cutoff (control)"}.get(group, group),
+            "n": len(g), "parsed": len(ok),
+            "exact_score": ok["exact"].mean() if len(ok) else float("nan"),
+            "both_within_3": ok["within3_both"].mean() if len(ok) else float("nan"),
+            "winner_acc": ok["winner_correct"].mean() if len(ok) else float("nan"),
+            "margin_mae": ok["margin_abs_err"].mean() if len(ok) else float("nan"),
+            "says_remembered": ok["remembered"].mean() if len(ok) else float("nan"),
+        })
+    out += ["#### Recall probe: \"what was the final score?\" with no tools", "",
+            "Exact scores are nearly impossible to guess, so an exact-score rate clearly "
+            "above the post-cutoff control is direct evidence of memorized outcomes. Winner "
+            "accuracy alone is not (favourites can be picked from general knowledge).", "",
+            _table(pd.DataFrame(rows), 3), ""]
+    if base is not None:
+        pre = df[(df["group"] == "pre") & (df["parsed"] == True)]  # noqa: E712
+        elo = base[(base["model"] == "elo") & base["game_id"].isin(pre["game_id"])]
+        if len(elo):
+            acc = ((elo["prob"] > 0.5) == (elo["y"] == 1)).mean()
+            out += [f"For reference, Elo's pre-game winner accuracy on the same "
+                    f"{len(elo)} experiment games is {acc:.3f}.", ""]
+    return out
 
 
 def _section_critique(preds, outs) -> list[str]:

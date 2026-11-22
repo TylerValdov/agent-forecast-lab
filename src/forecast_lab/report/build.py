@@ -279,7 +279,7 @@ def _section_cost(preds, outs) -> list[str]:
     m["b"] = (m["prob"].fillna(SENTINEL) - m["home_win"].astype(int)) ** 2
     g = m.groupby("variant").agg(n=("game_id", "size"), usd_per_pred=("cost_usd", "mean"),
                                  tokens_per_pred=("tok", "mean"),
-                                 latency_s=("latency_s", "mean"), steps=("steps", "mean"),
+                                 median_latency_s=("latency_s", "median"), steps=("steps", "mean"),
                                  brier=("b", "mean")).reset_index()
     g["skill_per_usd"] = (0.25 - g["brier"]) / g["usd_per_pred"].replace(0, np.nan)
     return ["### Cost and latency per prediction", "",

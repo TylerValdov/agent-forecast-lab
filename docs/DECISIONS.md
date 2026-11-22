@@ -249,3 +249,20 @@ own `mode`: R and G records are `replay_raw`, even inside an anonymized run.
 the same value as before for `v1` (checked against main_v1's manifest: `f7c92fa94435f16e`).
 Prompts used only by some variants or probes are hashed separately in the manifest
 (`extra_prompt_hashes`), so adding one does not change the bundle hash of earlier runs.
+
+## Observations from main_v1 (found after results; NOT applied to v1 results)
+
+**O2. Variant C has a prompt conflict, and 2.5% of its forecasts failed because of it.** The
+core system prompt (`system_v1.md`) says to call `submit_forecast` exactly once. The
+critique step (`critique_v1.md`) asks the agent to submit again. In 15 of 600 C
+predictions the agent obeyed the system prompt: "I won't call `submit_forecast` again… the
+tool allows one submission per game". It then refused every nudge until the 12-step limit.
+Under D16 these predictions are scored at 0.5, and they are reported as failures. The RQ2
+conclusion holds either way: on the 584 completed predictions, critique changed Brier by
+−0.0001 [−0.0014, +0.0012]. The fix is a prompt change, so it goes into a new prompt
+version (`v2`) and a new pre-registered config. It is not applied to v1 results.
+
+**O3. Latency is reported as a median.** Two API calls in main_v1 hung for 1,437 s and
+19,115 s, probably while the machine was asleep overnight. Those two calls, plus three
+`api_error` failures from the same period, distort the mean. Median latency is 3.9–7.2 s
+per prediction.

@@ -9,11 +9,21 @@ domain-agnostic so that NFL and stocks can be added.
 The point of this project is methodology rather than a winning model. A null result,
 reported with confidence intervals, sample sizes and costs, counts as a finding.
 
-> **Headline (as of the last `make report`):** see [REPORT.md](REPORT.md). On 4,920
-> walk-forward games (2022-23 to 2025-26), Elo and logistic regression reach a Brier score
-> of 0.218. Always predicting 0.5 scores 0.250 and the home-win base rate scores 0.247. LLM
-> agent results are added as runs complete: `live` mode is the primary evidence and
-> `replay_anonymized` is secondary.
+## Headline findings
+
+Pre-registered, Claude Haiku 5.5, `replay_anonymized`, 600 games from the 2025-26 season,
+paired on the same games. Brier score, lower is better; 95% paired-bootstrap CIs; Holm
+correction across 5 comparisons. Full tables: [REPORT.md](REPORT.md).
+
+| Question | Result | Verdict |
+|---|---|---|
+| Agent vs baselines | Agent A 0.2178 · logistic 0.2169 · Elo 0.2241 · coin flip 0.2500 | An LLM agent with simple stat tools forecasts about as well as a tuned logistic regression. It is not better. |
+| RQ1 memory (B − A) | −0.0032 [−0.0064, +0.0001], Holm p = 0.26 | Small improvement that is not significant. Worth retesting with more games. |
+| RQ2 self-critique (C − A) | +0.0019 [−0.0012, +0.0050]; draft → final −0.0001 | **No benefit.** Critique revises half the forecasts, makes them slightly less confident, and leaves accuracy unchanged. |
+| RQ3 false hint (D − A, 120 games) | shifts forecasts toward the hint by only +0.008, and changes the predicted winner 6.7% of the time; Brier −0.0017 [−0.010, +0.007] | Largely robust. A false "back-to-back" hint is the most persuasive (+0.031). Fewer than the pre-registered minimum of 300 hinted games. |
+| RQ5 contamination (300 games) | Exact-score recall 0/150 vs 0/100 post-cutoff controls; real names vs masked +0.001 [−0.004, +0.006]; "ignore what you remember" guardrail +0.002 [−0.001, +0.006] | **No evidence of memorized results** for this model and season, so masked replay is trustworthy here. The guardrail has no measurable effect. |
+
+Total LLM cost for both experiments: $2.81 (about $0.001 per forecast).
 
 ## Research questions
 

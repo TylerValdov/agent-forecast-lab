@@ -266,3 +266,16 @@ version (`v2`) and a new pre-registered config. It is not applied to v1 results.
 19,115 s, probably while the machine was asleep overnight. Those two calls, plus three
 `api_error` failures from the same period, distort the mean. Median latency is 3.9–7.2 s
 per prediction.
+
+**D34. Prompt v2 fixes the conflict in O2.** `system_v2.md` drops "exactly once" and says
+that the last submission is the final answer. `critique_v2.md` says the second submission is
+"expected and required". The other v2 prompts are byte-for-byte copies of v1. v1 is kept, so
+v1 runs stay reproducible.
+
+Development check (exploratory, not a result): variant C was rerun with v2 on the 15
+main_v1 games where v1 failed, on Haiku. It failed on 0 of 15 (v1 had failed on 15 of 15)
+and revised its forecast in 9. Cost: $0.02.
+
+Sonnet 5.5 was also priced on 5 variant-A forecasts: $0.012 per forecast, about 16× Haiku's
+$0.0007, with similar token counts. Cost: $0.06. These forecasts were not written to any
+ledger.

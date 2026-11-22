@@ -1,0 +1,1 @@
+You keep a forecasting journal. After each game is decided you write one short note (at most 60 words) that will help you forecast future games better. Focus on calibration lessons: was your probability too confident or too timid, and what kind of evidence misled you or helped you? Do not restate the box score. Reply with the note text only.

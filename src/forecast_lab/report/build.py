@@ -45,6 +45,15 @@ def _table(df: pd.DataFrame, nd: int = 4) -> str:
     return "\n".join(lines)
 
 
+def latest_run(runs_root: Path, experiment: str) -> Path | None:
+    """Most recent run of an experiment that completed."""
+    runs = sorted((runs_root / experiment).glob("*/manifest.json"))
+    for m in reversed(runs):
+        if json.loads(m.read_text()).get("stopped_reason") == "completed":
+            return m.parent
+    return None
+
+
 def load_run(run_dir: Path) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     manifest = json.loads((run_dir / "manifest.json").read_text())
     preds = pd.DataFrame([r for r in Ledger(run_dir / "predictions.jsonl").verify()
@@ -75,10 +84,16 @@ def section_run(run_dir: Path, runs_root: Path, fig_dir: Path) -> str:
     mode = manifest["mode"]
     name = f"{manifest['experiment']} / {manifest['run_id']}"
     primary = mode != "replay_raw"
+    if mode == "replay_post_cutoff":
+        mode_note = (f" (only games after {cfg.get('post_cutoff_after')}, past the model's "
+                     "training cutoff: outcomes cannot have been memorized)")
+    else:
+        mode_note = ""
     lines = [f"## Experiment `{name}`", ""]
     lines += [
-        f"- **Mode:** `{mode}`" + ("" if primary else " (NOT primary evidence: raw replay "
-                                    "of an LLM is contaminated by memorization)"),
+        f"- **Mode:** `{mode}`{mode_note}"
+        + ("" if primary else " (NOT primary evidence: raw replay of an LLM is "
+           "contaminated by memorization)"),
         "- **Status:** "
         + ("EXPLORATORY (config not committed at run time)"
            if manifest["prereg"]["exploratory"] else
@@ -99,6 +114,18 @@ def section_run(run_dir: Path, runs_root: Path, fig_dir: Path) -> str:
         return "\n".join(lines + ["_No agent predictions recorded._", ""])
 
     long = agent_long(preds, outs)
+    for ext in ev.get("external", []):
+        other = latest_run(runs_root, ext["experiment"])
+        if other is None:
+            lines.append(f"_External run `{ext['experiment']}` not found; "
+                         f"`{ext['label']}` omitted._\n")
+            continue
+        _, opreds, oouts = load_run(other)
+        o = agent_long(opreds, oouts)
+        o = o[(o["model"] == f"agent_{ext['variant']}") & o["game_id"].isin(long["game_id"])]
+        long = pd.concat([long, o.assign(model=ext["label"])])
+        lines.append(f"- **External:** `{ext['label']}` = variant {ext['variant']} from "
+                     f"`{other.parent.name}/{other.name}`, joined on the same games.")
     base = load_baseline_predictions(runs_root, manifest["data_snapshot"], cfg["lead_minutes"])
     if base is not None:
         base = base[base["game_id"].isin(long["game_id"]) & base["prob"].notna()]
@@ -181,11 +208,12 @@ def _section_contamination(preds, run_dir: Path, base) -> list[str]:
     if not out:
         out += ["### RQ5: contamination audit", ""]
     rows = []
-    for group, g in df.groupby("group"):
+    for (group, season), g in df.groupby(["group", "season"]):
         ok = g[g["parsed"] == True]  # noqa: E712
         rows.append({
             "group": {"pre": "experiment games (possibly in training data)",
                       "post": "after training cutoff (control)"}.get(group, group),
+            "season": season,
             "n": len(g), "parsed": len(ok),
             "exact_score": ok["exact"].mean() if len(ok) else float("nan"),
             "both_within_3": ok["within3_both"].mean() if len(ok) else float("nan"),
@@ -313,22 +341,25 @@ def section_baselines(runs_root: Path, fig_dir: Path) -> str:
     dirs = sorted((runs_root / "baselines").glob("*/manifest.json"))
     if not dirs:
         return "## Baselines\n\n_Not run yet: `forecast-lab baselines`._\n"
-    d = dirs[-1].parent
-    m = json.loads((d / "manifest.json").read_text())
-    board = pd.read_csv(d / "scoreboard.csv")
+    parts = ["## Baselines (mode `replay_raw`, walk-forward)", "",
+             "Market baseline: **missing** for historical games (no free historical odds "
+             "source; not approximated).", ""]
     fig_dir.mkdir(parents=True, exist_ok=True)
-    fig = fig_dir / "baselines_calibration.png"
-    fig.write_bytes((d / "calibration.png").read_bytes())
-    cols = [c for c in ["model", "n", "brier", "log_loss", "accuracy", "ece",
-                        "d_brier_vs_ref", "ci_low", "ci_high", "p_holm"] if c in board]
-    return "\n".join([
-        "## Baselines (mode `replay_raw`, walk-forward)", "",
-        f"Data snapshot `{m['data_snapshot']}`, forecasts made {m['lead_minutes']} min before "
-        f"tip-off, evaluated on {m['n_games_eval']} regular-season games from "
-        f"{m['eval_from']}. Δ vs Elo, 95% paired bootstrap CI.", "",
-        _table(board[cols]), "", f"![baseline calibration]({fig.as_posix()})",
-        "", "Market baseline: **missing** for historical games (no free historical odds "
-        "source; not approximated).", ""])
+    for mf in dirs:
+        d = mf.parent
+        m = json.loads(mf.read_text())
+        board = pd.read_csv(d / "scoreboard.csv")
+        fig = fig_dir / f"baselines_{m['data_snapshot']}_calibration.png"
+        fig.write_bytes((d / "calibration.png").read_bytes())
+        cols = [c for c in ["model", "n", "brier", "log_loss", "accuracy", "ece",
+                            "d_brier_vs_ref", "ci_low", "ci_high", "p_holm"] if c in board]
+        parts += [
+            f"### Snapshot `{m['data_snapshot']}`: {m['n_games_eval']} games from "
+            f"{m['eval_from']}", "",
+            f"Forecasts made {m['lead_minutes']} min before tip-off. Δ vs Elo, 95% paired "
+            "bootstrap CI.", "", _table(board[cols]), "",
+            f"![baseline calibration]({fig.as_posix()})", ""]
+    return "\n".join(parts)
 
 
 def section_live(live_dir: Path) -> str:
@@ -357,10 +388,13 @@ def section_live(live_dir: Path) -> str:
 
 LIMITATIONS = """## Limitations
 
-- **Contamination.** LLMs may have memorized historical NBA results. Only `live` results are
-  clean. `replay_anonymized` masks team names, player names and dates in prompts and tool
-  outputs, which reduces but does not eliminate contamination (a model could still infer a
-  team from its statistical profile). `replay_raw` LLM numbers are never primary evidence.
+- **Contamination.** LLMs may have memorized historical NBA results. `live` and
+  `replay_post_cutoff` (games after the model's reported training cutoff) are clean by
+  construction. `replay_anonymized` masks team names, player names and dates; the
+  contamination audit (RQ5) measures how much memorization remains rather than assuming it
+  away. `replay_raw` LLM numbers are never primary evidence on their own.
+- **Training cutoff is self-reported.** The post-cutoff boundary relies on the cutoff Claude
+  Code reports for the model (June 2026); games from 2026-10-01 on leave a >3-month margin.
 - **Sample size.** Single-game outcomes are noisy; differences in Brier of ~0.002 need
   thousands of games to resolve. Comparisons below the configured minimum sample are
   marked "insufficient data".

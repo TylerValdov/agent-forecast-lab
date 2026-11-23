@@ -17,6 +17,7 @@ import json
 import platform
 import random
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -49,6 +50,18 @@ def select_games(store: DataStore, cfg: ExperimentConfig, clock_end: datetime
         keep = set(random.Random(cfg.games.sample_seed).sample(
             [g.game_id for g in games], cfg.games.sample))
         games = [g for g in games if g.game_id in keep]
+    # Nested subsample: a strict subset of the sample above, so a second experiment (e.g. a
+    # bigger model) can be paired game-for-game with the first.
+    if cfg.games.subsample is not None and cfg.games.subsample < len(games):
+        keep = set(random.Random(cfg.games.subsample_seed).sample(
+            sorted(g.game_id for g in games), cfg.games.subsample))
+        games = [g for g in games if g.game_id in keep]
+    if cfg.mode == "replay_post_cutoff":
+        cutoff = datetime.combine(cfg.post_cutoff_after, time(), tzinfo=UTC)
+        early = [g.game_id for g in games if g.tipoff_utc < cutoff]
+        if early:
+            raise ValueError(f"replay_post_cutoff: {len(early)} games tip off before "
+                             f"{cfg.post_cutoff_after} (e.g. {early[:3]})")
     return games  # chronological (scheduled_between sorts by tipoff)
 
 
@@ -98,6 +111,7 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
         out = out_root / cfg.name / run_id
         out.mkdir(parents=True)
     ledger, outcomes = Ledger(out / "predictions.jsonl"), Ledger(out / "outcomes.jsonl")
+    # Masked only in replay_anonymized; replay_raw and replay_post_cutoff use real names.
     masker = Masker(salt=f"{cfg.name}:{cfg.seed}", enabled=cfg.mode == "replay_anonymized")
     agent_cfg = AgentConfig(**cfg.agent.model_dump())
     ctx = RunContext(run_id, prereg.config_sha256, cfg.mode, masker, agent_cfg,
@@ -161,6 +175,7 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
 
     save("running")
     stop: str | None = None
+    pool = ThreadPoolExecutor(max_workers=max(1, cfg.concurrency))
     try:
         for g in games:
             as_of = g.tipoff_utc - lead
@@ -168,7 +183,7 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
             if g.game_id in hint_ids:
                 hint = make_hint(store, g, as_of, masker, cfg.hints.seed)
                 assert hint is None or verify_false(store, g, as_of, hint)
-            complete = True
+            tasks: list[tuple[int, str]] = []
             for r in range(cfg.repeats):
                 for v in cfg.variants:
                     if v == "D" and g.game_id not in hint_ids:
@@ -179,19 +194,34 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
                         ledger.append({"kind": "skip", "run_id": run_id,
                                        "game_id": g.game_id, "variant": "D", "repeat": r,
                                        "reason": "no verifiably-false hint template applied"})
+                        done.add((g.game_id, v, r))
                         continue
-                    if not budget.can_afford_next():
-                        complete = False
-                        break
-                    rec = predict(llm, store, g, as_of, v, ctx, memory=memories[r],
-                                  hint=hint, repeat=r)
-                    ledger.append(rec)
-                    budget.charge(rec["cost_usd"], sum(rec["tokens"].values()))
-                    if v == "B":
-                        b_records[(g.game_id, r)] = rec
-            if not complete:
+                    tasks.append((r, v))
+            # Budget check covers the whole batch (estimated at the running mean cost).
+            if tasks and not budget.can_afford_next(safety=1.0 + len(tasks)):
                 stop = budget.stopped_reason
                 break  # never reveal a game whose predictions are incomplete
+
+            # The variants of one game are independent given the data, so they run
+            # concurrently; records are appended in a fixed (repeat, variant) order. Memory
+            # is only read here; it is written after the reveal below.
+            futures = {t: pool.submit(predict, llm, store, g, as_of, t[1], ctx,
+                                      memory=memories[t[0]], hint=hint, repeat=t[0])
+                       for t in tasks}
+            first_error: BaseException | None = None
+            for r, v in tasks:
+                try:
+                    rec = futures[(r, v)].result()
+                except BaseException as e:  # keep the successes, then stop
+                    first_error = first_error or e
+                    continue
+                ledger.append(rec)
+                done.add((g.game_id, v, r))
+                budget.charge(rec["cost_usd"], sum(rec["tokens"].values()))
+                if v == "B":
+                    b_records[(g.game_id, r)] = rec
+            if first_error is not None:
+                raise first_error
 
             # ---- reveal (only after every prediction for this game is on disk)
             result = store.reveal(g.game_id,
@@ -248,5 +278,7 @@ def run_replay(cfg: ExperimentConfig, prereg: PreregRecord, store: DataStore,
     except BaseException as e:  # record the crash, never leave the manifest at "running"
         save(f"error: {type(e).__name__}: {e} (fix, then --resume)")
         raise
+    finally:
+        pool.shutdown(wait=True)
     save(stop or "completed")
     return out

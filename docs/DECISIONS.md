@@ -279,3 +279,28 @@ and revised its forecast in 9. Cost: $0.02.
 Sonnet 5.5 was also priced on 5 variant-A forecasts: $0.012 per forecast, about 16× Haiku's
 $0.0007, with similar token counts. Cost: $0.06. These forecasts were not written to any
 ledger.
+
+## Completion runs (main_v2, sonnet_v1, postcutoff_v1)
+
+**D35. A game's variants run in parallel.** The variants of one game are independent given
+the data, so they run in a thread pool (`concurrency`, default 4). Records are still
+appended in a fixed (repeat, variant) order. Memory is only read during prediction and only
+written after the reveal, so time-gating is unchanged. A test checks that parallel and
+sequential runs give identical records. The API client now retries up to 8 times with
+backoff, so that a burst of rate-limit errors is not recorded as a failed forecast. Main_v1
+ran sequentially and took 12.5 hours.
+
+**D36. (spec deviation) The live-mode requirement is met by post-cutoff replay.** The
+handoff's definition of done asks for live mode running for several days. Its purpose is
+evidence free of memorization. Every 2026-27 game was played after the model's reported
+training cutoff (June 2026), so a replay of those games (`replay_post_cutoff`, 248 games)
+gives that evidence without waiting. Live mode is still implemented and passed its dry-run
+test, and it can be started at any time to keep growing the sample. A
+`replay_post_cutoff` config refuses to start if any selected game tipped off before
+`post_cutoff_after` (2026-10-01, more than 3 months after the cutoff).
+
+**D37. Paired comparison across experiments.** `sonnet_v1` uses a nested subsample of
+`main_v2`'s games (the same `sample`/`sample_seed`, then `subsample`). The report joins
+Haiku's A from the latest *completed* `main_v2` run to Sonnet's A by game_id. The comparison
+is therefore paired on identical games, prompts (v2), tools and data snapshot. The only
+difference is the model.

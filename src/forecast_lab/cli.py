@@ -52,7 +52,7 @@ def cmd_data_refresh(a) -> None:
 def cmd_baselines(a) -> None:
     from forecast_lab.runner.baselines import run_baselines
 
-    store = _load_store()
+    store = _load_store(seasons=a.seasons or None)
     out = run_baselines(store, date.fromisoformat(a.eval_from), a.lead_minutes,
                         include_ml=not a.no_ml, n_resamples=a.resamples)
     import pandas as pd
@@ -96,7 +96,7 @@ def cmd_run(a) -> None:
                                  exploratory=a.exploratory or a.fake_llm or override)
     if cfg.mode == "replay_raw":
         print("NOTE: replay_raw LLM results are contaminated and never primary evidence.")
-    store = _load_store()
+    store = _load_store(seasons=cfg.data_seasons)
     post_store = None
     if cfg.recall_probe:  # control games after the training cutoff: current season, cached
         from forecast_lab.data.nba_loader import current_season
@@ -169,6 +169,7 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--lead-minutes", type=int, default=60)
     b.add_argument("--no-ml", action="store_true")
     b.add_argument("--resamples", type=int, default=10_000)
+    b.add_argument("--seasons", nargs="*", help="seasons to load (default: data.yaml)")
     b.set_defaults(fn=cmd_baselines)
 
     e = sub.add_parser("run", help="run a pre-registered replay experiment")

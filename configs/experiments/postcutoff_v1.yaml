@@ -1,0 +1,49 @@
+# PRE-REGISTERED post-cutoff replay. Committing this file pre-registers it.
+#
+# The cleanest evidence available without waiting for live games: every game in the
+# 2026-27 season played so far. All were played after the model's reported training cutoff
+# (June 2026), so outcomes cannot have been memorized; real names are used. This replaces
+# the handoff's "live mode for several days" requirement (DECISIONS D36); live mode remains
+# implemented and tested.
+#
+# Same hypotheses and comparisons as main_v2 (Holm across 5). With ~250 games, comparisons
+# below min_n are reported as "insufficient data"; this run is a robustness check on the
+# direction of main_v2's effects, not a replacement for its power.
+name: postcutoff_v1
+description: "Variants A-D (prompts v2) on all 2026-27 games so far, after the model's training cutoff."
+status: preregistered
+domain: nba
+mode: replay_post_cutoff
+post_cutoff_after: 2026-10-01
+data_seasons: ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26", "2026-27"]
+model: claude-haiku-5-5
+effort: low
+backend: api
+seed: 4
+repeats: 1
+variants: [A, B, C, D]
+lead_minutes: 60
+concurrency: 4
+games:
+  start: 2026-10-01
+  end: 2026-11-24
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v2
+memory: {k: 10}
+hints: {rate: 0.3, seed: 404}
+budget: {usd: 2.00, tokens: 15000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 200
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  comparisons:
+    - {a: B, b: A, rq: RQ1}
+    - {a: C, b: A, rq: RQ2}
+    - {a: D, b: A, rq: RQ3}
+    - {a: A, b: elo, rq: "agent vs Elo"}
+    - {a: A, b: logistic, rq: "agent vs logistic"}

@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-Mode = Literal["live", "replay_anonymized", "replay_raw"]
+# replay_post_cutoff: real names, but only games played after the model's training
+# cutoff (`post_cutoff_after`), so outcomes cannot have been memorized.
+Mode = Literal["live", "replay_anonymized", "replay_raw", "replay_post_cutoff"]
 VariantId = Literal["A", "B", "C", "D", "R", "G"]
 
 
@@ -23,6 +25,9 @@ class GameSelection(_Strict):
     end: date  # exclusive
     sample: int | None = None  # seeded subsample size (kept in chronological order)
     sample_seed: int = 0
+    # optional nested subsample of the sample above (pairs two experiments game-for-game)
+    subsample: int | None = None
+    subsample_seed: int = 0
 
 
 class AgentSettings(_Strict):
@@ -65,12 +70,22 @@ class Comparison(_Strict):
     rq: str  # which research question this comparison addresses
 
 
+class ExternalRef(_Strict):
+    """A variant from another experiment's latest completed run, joined by game_id for
+    paired comparisons (e.g. Sonnet's A vs Haiku's A on the same games)."""
+
+    experiment: str
+    variant: str
+    label: str
+
+
 class Evaluation(_Strict):
     reference_baseline: str = "elo"
     min_n: int = 100
     bootstrap_resamples: int = 10_000
     bootstrap_seed: int = 0
     comparisons: list[Comparison] = []
+    external: list[ExternalRef] = []
 
 
 class ExperimentConfig(_Strict):
@@ -95,6 +110,17 @@ class ExperimentConfig(_Strict):
     recall_probe: RecallProbe | None = None
     budget: Budget
     evaluation: Evaluation = Evaluation()
+    # predictions for one game's variants run concurrently (no effect on results)
+    concurrency: int = 4
+    # seasons to load (default: configs/data.yaml); post-cutoff runs add the current season
+    data_seasons: list[str] | None = None
+    post_cutoff_after: date | None = None
+
+    @model_validator(mode="after")
+    def _post_cutoff_needs_date(self):
+        if self.mode == "replay_post_cutoff" and self.post_cutoff_after is None:
+            raise ValueError("mode replay_post_cutoff requires post_cutoff_after")
+        return self
 
 
 def load_config(path: str | Path) -> tuple[ExperimentConfig, str]:

@@ -78,7 +78,7 @@ class LLMClient(Protocol):
 
 
 class AnthropicLLM:
-    def __init__(self, model: str, effort: str = "low", max_retries: int = 4,
+    def __init__(self, model: str, effort: str = "low", max_retries: int = 8,
                  timeout_s: float = 120.0) -> None:
         import anthropic
 

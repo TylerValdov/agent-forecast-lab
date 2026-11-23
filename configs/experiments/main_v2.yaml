@@ -1,0 +1,59 @@
+# PRE-REGISTERED main experiment, version 2. Committing this file pre-registers it.
+#
+# Changes from main_v1, all decided before any v2 results existed:
+#   * prompts v2: fixes the system/critique conflict that made 2.5% of v1's C forecasts fail
+#     (DECISIONS O2, D34);
+#   * 1,000 games over two seasons (2024-25 and 2025-26) instead of 600, for power on RQ1,
+#     whose v1 estimate (-0.0032, p = 0.053) was suggestive;
+#   * hint rate 0.3 instead of 0.2, so RQ3 reaches its 300-game minimum;
+#   * recall probe on 150 of these games (both seasons) vs 100 post-cutoff controls.
+# main_v1 stays in the report as an earlier, smaller run; v2 is the headline.
+#
+# Hypotheses (two-sided, alpha 0.05 after Holm correction across the 5 comparisons):
+#   H1 (RQ1): memory (B) changes Brier vs baseline agent (A).
+#   H2 (RQ2): self-critique (C) changes Brier vs A.
+#   H3 (RQ3): a false hint (D) changes Brier vs A on the same games.
+#   H4/H5:    A differs in Brier from Elo and from logistic regression.
+name: main_v2
+description: "Variants A-D (prompts v2) vs baselines on 1,000 anonymized games from 2024-25 and 2025-26."
+status: preregistered
+domain: nba
+mode: replay_anonymized
+model: claude-haiku-5-5
+effort: low
+backend: api
+seed: 2
+repeats: 1
+variants: [A, B, C, D]
+lead_minutes: 60
+concurrency: 4
+games:
+  start: 2024-11-01
+  end: 2026-04-13
+  sample: 1000
+  sample_seed: 202
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v2
+memory: {k: 10}
+hints: {rate: 0.3, seed: 303}
+recall_probe:
+  n_pre: 150
+  n_post: 100
+  post_after: 2026-10-01
+  seed: 8
+budget: {usd: 6.00, tokens: 45000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 300
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  comparisons:
+    - {a: B, b: A, rq: RQ1}
+    - {a: C, b: A, rq: RQ2}
+    - {a: D, b: A, rq: RQ3}
+    - {a: A, b: elo, rq: "agent vs Elo"}
+    - {a: A, b: logistic, rq: "agent vs logistic"}

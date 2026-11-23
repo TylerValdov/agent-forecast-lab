@@ -1,0 +1,54 @@
+# PRE-REGISTERED model-size comparison. Committing this file pre-registers it.
+#
+# Does a stronger model forecast better? Claude Sonnet 5.5 runs the base agent (A, prompts
+# v2) on a nested 400-game subset of main_v2's games, so it is paired game-for-game with
+# Haiku's A from main_v2. A recall probe checks whether Sonnet has memorized more.
+# Owner's cap: total Sonnet spend under ~$7. Measured $0.012/forecast; $0.06 already spent
+# on the cost check, so the hard budget below is $6.40.
+#
+# Hypotheses (two-sided, Holm across the 3 comparisons):
+#   H6:  Sonnet A differs in Brier from Haiku A on the same games.
+#   H7/8: Sonnet A differs from Elo and from logistic regression.
+name: sonnet_v1
+description: "Sonnet 5.5 base agent on 400 of main_v2's games, paired with Haiku; recall probe."
+status: preregistered
+domain: nba
+mode: replay_anonymized
+model: claude-sonnet-5-5
+effort: low
+backend: api
+seed: 3
+repeats: 1
+variants: [A]
+lead_minutes: 60
+concurrency: 4
+games:
+  start: 2024-11-01
+  end: 2026-04-13
+  sample: 1000
+  sample_seed: 202      # identical to main_v2 ...
+  subsample: 400
+  subsample_seed: 77    # ... then a nested 400-game subset
+agent:
+  max_steps: 8
+  critique_extra_steps: 4
+  max_tokens_per_call: 4000
+  max_total_tokens: 60000
+  prompt_version: v2
+recall_probe:
+  n_pre: 150
+  n_post: 100
+  post_after: 2026-10-01
+  seed: 8
+budget: {usd: 6.40, tokens: 8000000}
+evaluation:
+  reference_baseline: elo
+  min_n: 300
+  bootstrap_resamples: 10000
+  bootstrap_seed: 0
+  external:
+    - {experiment: main_v2, variant: A, label: haiku_A}
+  comparisons:
+    - {a: A, b: haiku_A, rq: "model size (Sonnet vs Haiku)"}
+    - {a: A, b: elo, rq: "Sonnet agent vs Elo"}
+    - {a: A, b: logistic, rq: "Sonnet agent vs logistic"}

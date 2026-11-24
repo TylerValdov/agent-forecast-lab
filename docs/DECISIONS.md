@@ -304,3 +304,17 @@ test, and it can be started at any time to keep growing the sample. A
 Haiku's A from the latest *completed* `main_v2` run to Sonnet's A by game_id. The comparison
 is therefore paired on identical games, prompts (v2), tools and data snapshot. The only
 difference is the model.
+
+**O4. Long runs stalled while the PC slept.** main_v2 paused for 6.4 h and 4.5 h with a
+single request hung for 16,386 s. No records were lost or corrupted, and all failures were
+zero. `forecast-lab run` now calls `SetThreadExecutionState` on Windows to block idle sleep
+for the life of the process. Closing the lid still suspends.
+
+**O5. (exploratory, not pre-registered) Memory notes with real names are team-specific.**
+In postcutoff_v1, where B was significantly worse than A, 154 of 248 memory notes (62%)
+name a team, for example "I leaned on a 10-game margin edge for SAS". In the masked
+main_v1, 0 of 598 do. The notes also give opposite lessons from game to game ("shrink
+toward the base rate" vs "the form gap is a meaningful signal"), which suggests that memory
+learns from single-game noise. Only 13 of 248 B forecasts mention the journal explicitly.
+These are hypotheses for a future pre-registered test, for example memory restricted to
+team-agnostic lessons. They are not conclusions.

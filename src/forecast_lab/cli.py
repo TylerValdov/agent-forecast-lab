@@ -25,6 +25,16 @@ def load_dotenv(path: Path = Path(".env")) -> None:
             os.environ.setdefault(key.strip(), value)
 
 
+def keep_awake() -> None:
+    """On Windows, block idle sleep for the life of this process (released automatically on
+    exit). A sleeping PC stalled main_v1 and main_v2 for hours mid-request."""
+    if sys.platform == "win32":
+        import ctypes
+
+        es_continuous, es_system_required = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | es_system_required)
+
+
 def _load_store(seasons: list[str] | None = None, live: bool = False, refresh: bool = False):
     """Replay/baselines use the frozen historical seasons in configs/data.yaml (so the data
     snapshot hash is stable). Live mode adds the current season, re-fetched if `refresh`."""
@@ -88,6 +98,7 @@ def cmd_run(a) -> None:
     from forecast_lab.runner.prereg import check_preregistered
     from forecast_lab.runner.replay import run_replay
 
+    keep_awake()
     cfg, h = load_config(a.config)
     override = _backend_override(a, cfg)
     if override:

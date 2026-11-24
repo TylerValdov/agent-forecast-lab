@@ -147,6 +147,13 @@ def cmd_live_resolve(a) -> None:
     print(json.dumps(live_resolve(store, llm, _now(a), _live_dir(a)), indent=2))
 
 
+def cmd_bundle(a) -> None:
+    from forecast_lab.report.bundle import bundle_runs
+
+    out = bundle_runs([Path(d) for d in a.runs], Path(a.output))
+    print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
+
+
 def cmd_report(a) -> None:
     from forecast_lab.report.build import build_report
 
@@ -198,6 +205,11 @@ def main(argv: list[str] | None = None) -> None:
     rp = sub.add_parser("report", help="generate REPORT.md")
     rp.add_argument("runs", nargs="*", help="run dirs (default: all)")
     rp.set_defaults(fn=cmd_report)
+
+    bd = sub.add_parser("bundle", help="zip run directories (+SHA256SUMS) for a release")
+    bd.add_argument("runs", nargs="+", help="run directories")
+    bd.add_argument("-o", "--output", default="dist/runs.zip")
+    bd.set_defaults(fn=cmd_bundle)
 
     load_dotenv()
     a = p.parse_args(argv)

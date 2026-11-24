@@ -67,21 +67,28 @@ trusted on its own. The harness has three modes:
 - **`replay_raw`**: for baselines only. LLM results from this mode are never presented as
   evidence.
 
-## Quickstart (about 5 minutes, no API key needed)
+## Quickstart (no API key needed)
+
+Timings below were measured from a fresh clone on a home connection.
 
 ```bash
-git clone <this repo> && cd agent-forecast-lab
+git clone https://github.com/TylerValdov/agent-forecast-lab && cd agent-forecast-lab
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-pytest -q                                  # runs the leakage tests and everything else
+pip install -e ".[dev]"                    # ~3 min
+pytest -q                                  # 60 tests incl. the adversarial leakage tests, ~30 s
 
-forecast-lab data refresh                  # caches 5 seasons from stats.nba.com (~1 min)
-forecast-lab baselines                     # the baseline scoreboard (~4 min)
+forecast-lab data refresh                  # caches 6 seasons from stats.nba.com, ~40 s
+forecast-lab baselines --no-ml             # Elo / home-rate / coin-flip scoreboard, ~45 s
+#   (drop --no-ml to add the walk-forward logistic + GBM models, ~4 min)
 
-# Full pipeline with an offline FAKE LLM (a pipeline check, not a result):
-forecast-lab run configs/experiments/pilot_v1.yaml --fake-llm
-forecast-lab report
+# Full pipeline with an offline FAKE LLM: checks the plumbing, produces no results.
+forecast-lab run configs/experiments/pilot_v1.yaml --fake-llm   # ~5 s, writes runs_fake/
+forecast-lab report runs_fake/pilot_v1/*/    # REPORT.md for that fake run (don't commit it)
 ```
+
+A fresh clone rebuilds exactly the data used in the reported results. The historical
+snapshot hash `dd9e4a62ab14bbcf` printed by `data refresh` / recorded in each run's
+`manifest.json` matches, and Elo's Brier (0.2184) reproduces to four decimals.
 
 ### With a real model
 

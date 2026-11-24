@@ -89,3 +89,20 @@ def test_external_comparison_in_report(league_store, tmp_path):
     assert "haiku_A" in text and "agent_A vs haiku_A" in text
     row = next(line for line in text.splitlines() if "agent_A vs haiku_A" in line)
     assert "| 20 |" in row  # paired on the 20 shared games
+
+
+def test_bundle_zips_runs_with_checksums(league_store, tmp_path):
+    import hashlib
+    import zipfile
+
+    from forecast_lab.report.bundle import bundle_runs
+
+    out = run_replay(cfg(), PRE, league_store, HeuristicFakeLLM(), out_root=tmp_path)
+    z = bundle_runs([out], tmp_path / "dist" / "runs.zip")
+    with zipfile.ZipFile(z) as f:
+        names = set(f.namelist())
+        sums = dict(reversed(line.split("  ")) for line in
+                    f.read("SHA256SUMS").decode().splitlines())
+        assert f"x/{out.name}/predictions.jsonl" in names and "SHA256SUMS" in names
+        for arc, digest in sums.items():
+            assert hashlib.sha256(f.read(arc)).hexdigest() == digest

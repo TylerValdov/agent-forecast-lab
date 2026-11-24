@@ -1,205 +1,222 @@
-# forecast-lab: do agent design techniques make LLMs better forecasters?
+# forecast-lab: Do Agent Design Techniques Make LLMs Better Forecasters?
 
-A reproducible, leakage-safe harness that tests whether specific **LLM agent design
-techniques** (memory, self-critique, robustness to misleading context) improve
-**probabilistic forecasts**. Every condition is compared on the *same games* against
-standard non-LLM baselines. The first domain is NBA game outcomes, and the core is
-domain-agnostic so that NFL and stocks can be added.
+A reproducible, leakage-safe test of whether an LLM *agent* (one that calls tools, remembers past predictions, or critiques its own draft) forecasts better than a plain tool-using LLM, and better than classical statistical models. The first domain is NBA game outcomes. The core is domain-agnostic, so NFL, stocks or anything else with timestamped data can be added.
 
-The point of this project is methodology rather than a winning model. A null result,
-reported with confidence intervals, sample sizes and costs, counts as a finding.
+Full result tables are in [REPORT.md](REPORT.md). Install and run instructions are in [docs/USAGE.md](docs/USAGE.md). Every design decision, with its reasoning, is in [docs/DECISIONS.md](docs/DECISIONS.md).
 
-## Headline findings
+## Background
 
-**Primary experiment** ([`main_v2`](configs/experiments/main_v2.yaml), pre-registered): Claude Haiku 5.5, `replay_anonymized`, 1,000 games from Nov 2024 to Apr 2026. All results are paired on the same games and scored with Brier (lower is better). Intervals are 95% paired-bootstrap CIs, and p-values are Holm-corrected across 5 comparisons. Full tables are in [REPORT.md](REPORT.md).
+"Agentic" forecasting is the idea that wrapping an LLM in extra machinery should make it a better forecaster. The machinery usually means tools that fetch data, a memory of earlier predictions and how they turned out, and a step where the model critiques and revises its own draft. These techniques are popular and add real cost (more tokens, more latency, more moving parts), but they are rarely tested head to head against a simple baseline on the same questions.
 
-| Question | Result | Verdict |
-|---|---|---|
-| Agent vs baselines | Agent A 0.2059 · Elo 0.2066 · logistic 0.2067 · GBM 0.2087 · coin flip 0.2500 | The LLM agent with simple stat tools **ties the classical models**. A − logistic is −0.0008 [−0.0043, +0.0026]. |
-| RQ1 memory (B − A) | +0.0019 [−0.0007, +0.0045], p_holm 0.71 | **No benefit.** In the post-cutoff test (below), memory makes forecasts **significantly worse**. |
-| RQ2 self-critique (C − A) | +0.0011 [−0.0009, +0.0030]; draft → final +0.0007 | **No benefit.** Critique revises 72% of forecasts and makes them less confident, with no accuracy gain. |
-| RQ3 false hint (D − A, 300 games) | Shifts forecasts toward the hint by +0.014; flips the predicted winner in 5.0% of games; Brier +0.0032 [−0.0023, +0.0088] | **Mostly robust.** The false "back-to-back" hint is the most persuasive (+0.032). |
-| Model size: Sonnet 5.5 − Haiku 5.5 (400-game nested subsample) | −0.0023 [−0.0070, +0.0025], p_holm 0.69 | **Not significantly better** at about 17× the cost per forecast ($0.012 vs $0.0007). |
+NBA games are a good test bed. There is a steady supply of binary questions ("will the home team win?"), the outcomes are known within hours, there is plenty of public data, and well-understood statistical models (Elo ratings, logistic regression) exist to compare against. The goal of this project is the methodology: a fair comparison, honestly reported. A null result, with confidence intervals, sample sizes and costs, counts as a finding.
 
-**Contamination-free replication** ([`postcutoff_v1`](configs/experiments/postcutoff_v1.yaml), pre-registered): 248 games from the 2026-27 season. All tip off after the model's training cutoff, so real team names are safe to show.
+## Hypothesis
 
-| Question | Result |
+We started from three hypotheses, one per technique, and fixed them in writing before running anything (the configs are committed to git, and the harness refuses to run an experiment whose config is not committed and unmodified).
+
+1. **Memory helps.** An agent that keeps a short journal of lessons from past games will be better calibrated than one that starts fresh every game.
+2. **Self-critique helps.** An agent that writes a draft forecast, critiques it, and then revises will have a lower error than one that answers once.
+3. **A confident but false hint hurts.** If a prompt contains a plausible claim that the data contradicts (for example, "team X is on a back-to-back" when it is not), a robust agent should check the data and ignore it.
+
+Two further questions frame these. Do agents beat classical models at all? And, because LLMs may have memorized past NBA results during training, can a backtest on past games be trusted?
+
+## Key Considerations
+
+Does an LLM with simple stat lookups forecast as well as a logistic regression on Elo and rest features? Which of memory, self-critique and a larger model, if any, moves the error in a way that is distinguishable from noise? When a result looks better or worse, is the difference bigger than what random game outcomes would produce on their own? Can any of this be trusted if the model has already seen the final scores? And what does each technique cost per forecast, relative to what it buys?
+
+## Data
+
+Game data comes from stats.nba.com through the `nba_api` package: exact tip-off times and final scores from the schedule endpoint, and box scores from the game-finder endpoint, which give possessions and therefore net rating. Six seasons are cached, and the baseline evaluation covers 4,920 games from October 2022 onward (earlier games serve as warm-up for the models that learn from history). The raw cache is not committed. A fresh clone rebuilds it with one command, and each run records a content hash of the data (`dd9e4a62ab14bbcf` for the historical snapshot) so a run can be checked against a rebuilt cache.
+
+Every record carries an *availability time*: a game's result is treated as knowable 210 minutes after tip-off, which is deliberately later than a real game ends. All data access goes through a single `DataStore` that only returns records available strictly before the forecast time, so neither the agents nor the baselines can see a game's own result or anything after it.
+
+Two data gaps matter. There is no free historical betting-market data, so the market baseline is missing and is not approximated. There is also no reliable historical injury data, so the injury tool is switched off in replay. Both are listed under Limitations below.
+
+## Process
+
+1. Cache six NBA seasons and build the leakage-safe `DataStore`.
+2. Fit the classical baselines walk-forward, updating them game by game in time order, so each one only ever trains on games before the one it predicts.
+3. Pre-register each experiment by committing its config (games, variants, models, hypotheses, the exact comparisons to test) before running it.
+4. For each game, run every agent variant at a forecast time 60 minutes before tip-off. Each variant outputs a probability that the home team wins.
+5. Log the prediction to an append-only, hash-chained ledger, then reveal the outcome, then (for the memory variant) write a journal note.
+6. Score every forecast, compare variants on the *same games*, and generate the report.
+
+### The baselines
+
+| Baseline | What it is |
 |---|---|
-| RQ1 memory (B − A) | **+0.0082 [+0.0021, +0.0141], p_holm 0.03.** Memory significantly hurts. This is the only comparison across all experiments that survives correction. |
-| RQ2 self-critique (C − A) | +0.0008 [−0.0034, +0.0048], no effect again |
-| Agent A vs Elo / logistic | +0.0009 / +0.0117, both not significant |
+| Always 0.5 | A coin flip. The floor every model should beat. |
+| Home rate | The running home-win rate (about 55%). |
+| Elo | A rating system with FiveThirtyEight's published NBA settings. They were set before seeing this data and were not tuned. |
+| Logistic regression | Walk-forward, using Elo and rest-based features. Refit every 14 days. |
+| Gradient boosting | The same features, with a tree-based model. Refit every 14 days. |
 
-*Why memory hurts (exploratory; this was not pre-registered):* 62% of the post-cutoff memory notes name a specific team, compared with 0% in masked replay. Consecutive notes also give opposite advice ("shrink toward the base rate" vs "trust the form gap"). The agent appears to learn from single-game noise. See [DECISIONS](docs/DECISIONS.md) O5.
+The two learned models do not forecast until they have seen 400 games.
 
-**Contamination audit (RQ5):** a no-tools recall probe asked for exact final scores.
-- **Haiku:** across two runs, 2 of 300 experiment-era games recalled exactly vs 0 of 100 post-cutoff controls in each run.
-- **Sonnet:** 1.3% vs 1.0% for the controls.
-- **Real names vs masked:** +0.001 [−0.004, +0.006]. An "ignore what you remember" guardrail adds +0.002 [−0.001, +0.006].
+### The agent and its variants
 
-There is **no meaningful evidence of memorized results**, and the guardrail does nothing measurable.
+The agent is Claude Haiku 5.5 (Sonnet 5.5 for one comparison). It can call three typed tools, each restricted to the forecast time: team form over the last N games (record, net rating, average margin), rest days, and head-to-head history. It finishes by calling `submit_forecast` with a probability between 0.05 and 0.95. The variants differ in one thing each:
 
-**Bottom line:** memory, self-critique and a bigger model were each tested against a plain tool-using agent on the same games. None of them improved its NBA forecasts, and memory made them worse. The plain agent is about as good as a logistic regression on Elo and rest features. A null result is still a result.
-
-Total cost: **$12.17** in API spend for the 5 reported experiments, covering 7,338 forecasts, plus two small runs on a Claude subscription. Every ledger is in the release zip (`runs.zip`) and can be re-verified.
-
-## Research questions
-
-All of these are paired comparisons on the same games, set out in advance in
-[`configs/experiments/main_v2.yaml`](configs/experiments/main_v2.yaml) (main_v1 was the earlier, smaller run).
-
-| RQ | Question | Variant |
+| Variant | What changes | Tests |
 |---|---|---|
-| RQ1 | Does memory of past predictions and outcomes improve calibration? | **B** vs **A** |
-| RQ2 | Does draft → self-critique → revise improve Brier, or only raise confidence? | **C** vs **A** |
-| RQ3 | How often does a confident but *false* hint override what the data shows? | **D** vs **A** |
-| RQ4 *(stretch)* | Do typed tools beat a free-form code-execution tool? | E vs A |
-| RQ5 | Do forecasts on past games lean on memorized outcomes, and does telling the agent to ignore them help? | **R** (real names) vs **A** (masked); **G** (R + guardrail) vs **R**; plus a no-tools recall probe |
+| **A** | The base agent: tools plus `submit_forecast`. | The reference for everything below |
+| **B** | Adds a journal. After each game's result is known, a separate model call writes a note (at most 60 words) on what to do better. The last 10 notes are shown on the next game. | Memory (RQ1) |
+| **C** | After the first submission, the agent is asked to critique its own draft and submit a final probability. | Self-critique (RQ2) |
+| **D** | Adds a confident hint that the data contradicts: a losing streak, a back-to-back, or head-to-head dominance. Each hint is verified false against the data before it is used. | Robustness to misleading context (RQ3) |
+| **R** | Real team names and dates instead of masked ones. | Contamination (RQ5) |
+| **G** | Real names plus an "ignore what you remember" instruction. | Whether a guardrail helps (RQ5) |
 
-**A** is the base agent: tools plus `submit_forecast`. Every variant is also compared with
-the baselines: always 0.5, the home-win base rate, Elo, logistic regression, gradient
-boosting, and the betting market (live mode only).
+A planned variant E (typed tools versus a free-form code tool, RQ4) was a stretch goal and was not run.
 
-## Why you can trust the numbers
+### How we score
 
-| Principle | How it is enforced | Test |
+Forecasts are scored with the **Brier score**: the mean squared difference between the forecast probability and what happened (1 for a home win, 0 for a loss). Lower is better. A coin flip scores 0.2500, and a perfect forecaster scores 0. NBA games are noisy enough that good models land around 0.20 to 0.21, so differences between sensible models are small, often in the third decimal place.
+
+Because the differences are small, every comparison is **paired**: two variants are scored on the identical games, and we bootstrap the per-game differences (10,000 resamples) to get a 95% confidence interval. When an interval includes zero, the data cannot distinguish the two. With five comparisons per experiment, p-values are Holm-corrected so that testing several things does not make a lucky result look significant. Log loss, accuracy and calibration error (ECE) are also reported in [REPORT.md](REPORT.md).
+
+### Dealing with contamination
+
+If a model saw the final score of a 2024 game in training, a backtest on that game proves nothing. We attack this from three directions:
+
+- **Masking.** In the main experiment, team names, player names and dates are replaced with tokens like `team-3fa9c1` and `day-9483`, so the agent sees statistics but not identities.
+- **A post-cutoff replication.** All 248 games of the 2026-27 season so far tipped off after the model's reported training cutoff (June 2026), so memorization is impossible. Real names are safe to use there.
+- **An audit.** A tool-free probe asks the model for the exact final score of games it may have seen. Exact scores are nearly impossible to guess, so a hit rate clearly above the post-cutoff control would be direct evidence of memorization.
+
+### The experiments run
+
+| Experiment | Games | Model | Mode | Purpose | Cost |
+|---|---|---|---|---|---|
+| `main_v1` | 600 | Haiku 5.5 | masked replay | First main run. Showed a prompt bug in variant C (below). | $2.14 |
+| `main_v2` | 1,000 | Haiku 5.5 | masked replay | **Primary experiment**: variants A to D, prompt bug fixed, larger sample. | $3.44 |
+| `postcutoff_v1` | 248 | Haiku 5.5 | post-cutoff | Replication that cannot be contaminated. | $0.83 |
+| `sonnet_v1` | 400 | Sonnet 5.5 | masked replay | Model size, on a subsample of `main_v2`'s games. | $5.09 |
+| `contamination_v1` | 300 | Haiku 5.5 | masked and raw | Variants A, R, G and the recall probe. | $0.67 |
+
+Two earlier runs (`pilot_v1`, `check_c_v1`) were exploratory harness checks and are not evidence. The pilot found three harness bugs, all fixed without changing any hypothesis (see [DECISIONS](docs/DECISIONS.md), P1 to P3). Total spend for the five experiments above was about $12.2 across 7,338 forecasts.
+
+## Results
+
+All numbers below are Brier scores unless stated. A positive "difference" means the first variant is *worse*. Intervals are 95% paired-bootstrap CIs. Complete tables, calibration plots and failure accounting for every run are in [REPORT.md](REPORT.md).
+
+### Does an agent beat the classical models?
+
+No, but it ties them. In the primary experiment (`main_v2`, 1,000 masked games from November 2024 to April 2026):
+
+| Forecaster | Brier | Accuracy |
 |---|---|---|
-| **No leakage** | All data is read through `DataStore`, which returns only records available *strictly before* `as_of`, and `as_of` must be timezone-aware. Agents, tools, baselines and memory have no other way to read data. | `tests/test_leakage.py` tries to break it: a game's own result, same-day games, an injury report published after `as_of`, naive datetimes, mutation, and a static scan for bypasses |
-| **Predict, then reveal** | Each game's predictions go to an append-only ledger, the outcome goes to a separate file, and memory is updated only after that | `test_runner.py` |
-| **Pre-registration** | `forecast-lab run` refuses to start unless the config is committed and unmodified. Its sha256 and commit hash are written into every result. | `test_preregistration_gate` |
-| **Walk-forward baselines** | Results are fed to the baselines in time order. ML refits log their training windows, and hyperparameters are chosen by time-series CV inside the window. | `test_ml_training_windows_are_strictly_past` |
-| **Tamper-evident logs** | The ledger is hash-chained JSONL, so editing any past record makes verification fail | `test_ledger_is_append_only_and_tamper_evident` |
-| **Cost control** | Each run has a dollar and token cap and stops cleanly when it is reached. Cost per prediction is reported. | `test_budget_stops_run_cleanly` |
-| **Contamination** | Every number is labeled `live`, `replay_anonymized` or `replay_raw` | report generator |
+| **Agent A (tools only)** | **0.2059** | 68.8% |
+| Elo | 0.2066 | 67.3% |
+| Logistic regression | 0.2067 | 68.2% |
+| Gradient boosting | 0.2087 | 67.4% |
+| Home-win rate | 0.2482 | 54.7% |
+| Coin flip | 0.2500 | 45.3% |
 
-### Contamination
+Agent A minus logistic regression is −0.0008 [−0.0043, +0.0026], and agent minus Elo is −0.0007 [−0.0070, +0.0055]. Both intervals straddle zero comfortably. The agent is no worse than the classical models, but nothing shows it is better. All four real forecasters are clearly better than the coin flip and the home rate, which is expected, since there is real signal in recent form and rest.
 
-An LLM may have memorized past NBA results, so a historical backtest of an LLM can't be
-trusted on its own. The harness has three modes:
+![Pre-registered comparisons in main_v2](docs/figures/20261123T161113Z-8ff51a_comparisons.png)
 
-- **`live`** (primary): forecasts for upcoming games are committed to git *before
-  tip-off* by a scheduled job.
-- **`replay_anonymized`** (secondary): past games with team names, player names and dates
-  replaced by tokens such as `team-3fa9c1` and `day-9483`. This reduces contamination but
-  does not remove it.
-- **`replay_raw`**: for baselines only. LLM results from this mode are never presented as
-  evidence.
+*Each dot is a paired Brier difference (first minus second). Left of the dashed line favors the first variant. Every interval crosses zero.*
 
-## Quickstart (no API key needed)
+On the post-cutoff games the agent is again statistically tied with Elo (+0.0009 [−0.0139, +0.0154]) and, on this smaller sample, numerically behind logistic regression (+0.0117 [−0.0018, +0.0245], p_holm 0.33). That is not a significant gap, but it is a reminder that a 248-game sample is too small to rank models separated by about 0.01.
 
-Timings below were measured from a fresh clone on a home connection.
+### Calibration
 
-```bash
-git clone https://github.com/TylerValdov/agent-forecast-lab && cd agent-forecast-lab
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"                    # ~3 min
-pytest -q                                  # 61 tests incl. the adversarial leakage tests, ~30 s
+A forecaster is calibrated if its "70%" calls win about 70% of the time. In `main_v2`, the agent variants and the learned models follow the diagonal closely, while Elo with its fixed home-court advantage lies below it. Its home-team forecasts are too high, which is a known artifact of home-court advantage shrinking since 2020 (see [DECISIONS](docs/DECISIONS.md) O1).
 
-forecast-lab data refresh                  # caches 6 seasons from stats.nba.com, ~40 s
-forecast-lab baselines --no-ml             # Elo / home-rate / coin-flip scoreboard, ~45 s
-#   (drop --no-ml to add the walk-forward logistic + GBM models, ~4 min)
+![Calibration in main_v2](docs/figures/20261123T161113Z-8ff51a_calibration.png)
 
-# Full pipeline with an offline FAKE LLM: checks the plumbing, produces no results.
-forecast-lab run configs/experiments/pilot_v1.yaml --fake-llm   # ~5 s, writes runs_fake/
-forecast-lab report runs_fake/pilot_v1/*/    # REPORT.md for that fake run (don't commit it)
-```
+### RQ1: Does memory help? No, and it may hurt.
 
-A fresh clone rebuilds exactly the data used in the reported results. The historical
-snapshot hash `dd9e4a62ab14bbcf` printed by `data refresh` / recorded in each run's
-`manifest.json` matches, and Elo's Brier (0.2184) reproduces to four decimals.
+| Experiment | B − A (Brier) | p (Holm) |
+|---|---|---|
+| `main_v1`, 600 masked games | −0.0032 [−0.0064, +0.0001] | 0.26 |
+| `main_v2`, 1,000 masked games | +0.0019 [−0.0007, +0.0045] | 0.71 |
+| `postcutoff_v1`, 248 post-cutoff games | **+0.0082 [+0.0021, +0.0141]** | **0.03** |
 
-### With a real model
+The first run hinted that memory might help (p = 0.053 before correction, and 0.26 after). The larger run reversed the sign. That is exactly what a noisy effect near zero looks like, and it is why the primary experiment was run again with more games. On post-cutoff games, memory makes forecasts significantly worse. This is the only comparison across all experiments that survives multiple-comparison correction.
 
-```bash
-cp .env.example .env                       # then set ANTHROPIC_API_KEY
-export $(cat .env | xargs)                 # or set it in your shell
-forecast-lab run configs/experiments/pilot_v1.yaml --exploratory   # ~100 games, capped at $2
-```
+*Why?* We looked after the fact, so treat this as a hypothesis. With real team names, 154 of 248 memory notes (62%) name a specific team ("I leaned on a 10-game margin edge for SAS"), against 0 of 598 when names are masked. Consecutive notes also give opposite advice, such as "shrink toward the base rate" and then "the form gap is a meaningful signal". The agent seems to learn from single-game noise: one surprising result becomes a lesson that gets overapplied. Memory also costs about 40% more per forecast ($0.0010 vs $0.0007).
 
-### With your Claude subscription (no API key)
+### RQ2: Does self-critique help? No. It makes the model less confident, not more accurate.
 
-The `claude_code` backend runs the same agent through the Claude Code CLI (`claude -p`),
-which uses your Claude subscription and its usage limits. Log in once with `claude`, then:
+In `main_v2`, critique revised 72% of forecasts, but the Brier score went from 0.2062 (draft) to 0.2070 (final), a change of +0.0007 [−0.0006, +0.0020]. Average confidence (distance from 50%) fell from 0.152 to 0.141. The model hedged more, and the hedging did not buy accuracy. Variant C versus A is +0.0011 [−0.0009, +0.0030] in `main_v2` and +0.0008 [−0.0034, +0.0048] post-cutoff. Both are noise. It also costs about twice as much per forecast ($0.0013 vs $0.0007) and runs about 70% slower.
 
-```bash
-forecast-lab run configs/experiments/pilot_v1.yaml --backend claude_code --exploratory
-# if it stops at a usage limit, continue later under the same run id:
-forecast-lab run configs/experiments/pilot_v1.yaml --backend claude_code --exploratory     --resume runs/pilot_v1/<run_id>
-```
+One caveat is worth recording. In `main_v1`, 2.5% of variant C forecasts failed because the base prompt said "submit exactly once" while the critique step asked for a second submission, and the agent obeyed the base prompt. Failures are scored as 0.5 so that a variant cannot look better by failing on hard games. The prompt was fixed in v2 (0 failures in 1,000 forecasts), and the conclusion held either way: on the 584 `main_v1` forecasts that completed, critique changed Brier by −0.0001.
 
-Your API key is stripped from the CLI's environment, and the run aborts if Claude Code
-reports anything other than subscription login, or any tool besides ours. Claude Code adds
-about 1.1k tokens of its own context, including today's date. That is fine for `live`
-mode, but it is a confound for replay, so results record their `backend` and the two
-backends are never pooled (see [DECISIONS](docs/DECISIONS.md) D28).
+### RQ3: Does a false hint mislead the agent? Mostly no.
 
-Each LLM run writes `runs/<experiment>/<run_id>/` containing `manifest.json` (config hash,
-git commit, model ID, prompt bundle hash, data snapshot hash, spend),
-`predictions.jsonl` (full trajectories), `outcomes.jsonl` and `memory_r*.jsonl`.
+In `main_v2`, 300 games received a hint that was verified false against the data. On average the forecast moved 0.014 toward the hint, and the predicted winner flipped in 5.0% of games. The Brier change was +0.0032 [−0.0023, +0.0088], not distinguishable from zero. The effect depends on the hint type:
 
-## Refreshing data
+| Hint | Shift toward hint (n) |
+|---|---|
+| "Back-to-back" | +0.032 (89) |
+| Head-to-head dominance | +0.012 (110) |
+| Losing streak | +0.002 (101) |
 
-```bash
-forecast-lab data refresh                    # cached seasons are skipped
-forecast-lab data refresh --force            # refetch everything
-forecast-lab data refresh --seasons 2026-27  # a single season
-```
+The back-to-back claim is the most persuasive, which makes sense: it is a well-known real factor, so a plausible-sounding false claim about it is easiest to believe. The agent largely held to the data, and no system-prompt warning about skepticism was used (we deliberately left it out so we would measure the agent's default robustness rather than an instruction). The post-cutoff run had only 74 hinted games, below the 300-game minimum we set, so it is marked "insufficient data" and is not used for the verdict.
 
-Raw responses are cached under `data/cache/` (gitignored), with a `.meta.json` file next
-to each recording when it was fetched and from which endpoint. The store's content hash
-(`data_snapshot`) is logged with every run. If stats.nba.com rate-limits you, raise
-`request_pause_s` in `configs/data.yaml`.
+### Does a bigger model help? Not detectably, and it costs 17× as much.
 
-## Live mode
+On a 400-game subsample of `main_v2`'s games, Sonnet 5.5 scored 0.2078 against Haiku 5.5's 0.2101 on the same games, a difference of −0.0023 [−0.0070, +0.0025], p_holm 0.69. Per forecast, Sonnet costs $0.0123 and Haiku $0.0007. Improvement over a coin flip per dollar spent: Haiku about 60 Brier points per dollar-per-prediction, Sonnet about 3. If this holds up with more games, the cheap model is the better engineering choice here.
 
-```bash
-forecast-lab live predict    # forecasts for games tipping off in the next 30h, as_of = now
-forecast-lab live resolve    # records finished games, then writes memory notes
-forecast-lab report
-```
+### RQ5: Has the model memorized NBA results? No meaningful evidence.
 
-`.github/workflows/live.yml` runs both jobs every day and commits `runs/live/*.jsonl`, so
-the git history is a public record that each forecast came before its game. stats.nba.com
-often blocks cloud IPs, so if the hosted runner can't fetch data, run the same two commands
-from your own machine with cron or Windows Task Scheduler.
+We asked each model, with no tools, for the exact final score of games it may have seen in training, and compared the hit rate to 100 games played after its training cutoff (which it cannot have seen).
 
-To test the job against cached data without waiting a day:
+| Model | Exact-score hits, experiment-era games | Exact-score hits, post-cutoff control |
+|---|---|---|
+| Haiku 5.5 | 2 of 300 across two runs | 0 of 100 (in each run) |
+| Sonnet 5.5 | 1.3% | 1.0% |
 
-```bash
-forecast-lab live predict --dry-run --now 2026-04-01T15:00:00Z --fake-llm
-forecast-lab live resolve --dry-run --now 2026-04-02T12:00:00Z --baselines-only
-```
+Hit rates are within noise of the controls. We then tested whether real names change the forecast: real names minus masked names is +0.0010 [−0.0037, +0.0056] on 300 games (p_holm 0.67). The "ignore what you remember" guardrail adds +0.0022 [−0.0014, +0.0060] on top of real names. Neither is distinguishable from zero. So masking appears to cost nothing, and the guardrail appears to do nothing. We cannot prove the model has no memorized results, only that this probe finds none.
 
-## Layout
+### Summary
 
-```
-src/forecast_lab/
-  data/       schema, DataStore (the as_of guard), NBA loader + cache, Masker, derived stats
-  baselines/  always-0.5, home rate, Elo, logistic/GBM (walk-forward), market adapter
-  tools/      typed agent tools; each one is bound to (game, as_of) and passes through the Masker
-  agents/     tool-use loop, versioned prompts, memory, hint generation, LLM client, fakes
-  eval/       Brier, log loss, ECE, decomposition, paired bootstrap, Holm/BH, scoreboard
-  runner/     configs, pre-registration gate, budget guard, replay + live runners
-  ledger/     append-only hash-chained JSONL
-  report/     REPORT.md + figures
-configs/experiments/   pre-registered experiment configs
-docs/DECISIONS.md      every design decision and departure from the spec, with reasons
-```
+| Question | Answer |
+|---|---|
+| Agent vs classical models | Tie. About as good as logistic regression on Elo and rest. |
+| RQ1 Memory | No benefit. Significantly worse post-cutoff. |
+| RQ2 Self-critique | No benefit. Less confident, same accuracy, about 2× the cost. |
+| RQ3 False hint | Mostly robust. Back-to-back claims are the weak spot. |
+| Larger model | Not detectably better, about 17× the cost. |
+| RQ5 Contamination | No meaningful evidence of memorized results. Guardrail does nothing measurable. |
 
-## Adding a domain (NFL, stocks)
+The plain tool-using agent is about as good as a logistic regression, and each added technique either did nothing or hurt. That is worth knowing before adding complexity.
 
-The as_of guard, ledger, budget, pre-registration, evaluation and report contain no
-sport-specific logic. A new domain needs:
+## Limitations
 
-1. a loader that builds a `DataStore`, where every record carries an availability timestamp;
-2. derived statistics and typed tools, all read through the store;
-3. a feature function for the ML baselines;
-4. hint templates that can be checked as false against the store.
+- **Sample size.** Single-game outcomes are noisy. Brier differences of about 0.002 need thousands of games to resolve. Several intervals here would still be wide enough to hide a real effect of that size, so "no significant difference" means "no detectable difference", not "no difference".
+- **One domain, one task.** These are NBA home-win probabilities, forecast from simple team statistics, using one model family. Results may not carry over to harder questions, richer data, or other tasks.
+- **No market baseline.** Betting odds are the strongest public benchmark, and no free historical source exists. Nothing here claims to beat the market.
+- **No injury data.** The injury tool is disabled in replay because reliable historical injury reports were unavailable. A real forecaster would use them.
+- **Self-reported training cutoff.** The post-cutoff boundary relies on the cutoff the model reports (June 2026). Games from October 2026 leave a margin of more than three months.
+- **Model drift and sampling.** Hosted models can change behind a fixed ID, and current models reject temperature settings, so variance is estimated with repeated runs rather than a fixed seed. Every record logs the model ID and date.
+- **The memory explanation is exploratory.** It was found after seeing the results and was not pre-registered.
 
-For stocks, the binary event would be something like "closes up over the next *N* trading
-days". Availability timestamps would come from bar close times, which makes the guard the
-same.
+## Further Questions
 
-## Non-goals
+- **Can memory be fixed?** If notes are restricted to team-agnostic calibration lessons, does the harm disappear? This needs a new pre-registered config.
+- **Do agents help where classical models are weak?** The NBA is well served by Elo. A domain with messier, text-heavy evidence (news, filings, injury reports) is where tools and reasoning might add value.
+- **What does the agent add beyond the baselines?** Does blending the agent's forecast with Elo or logistic regression beat either alone, since their errors may not be fully correlated?
+- **Does a skeptical prompt change RQ3?** A prompt that says to verify claims would test a different question, instruction-following, and should be a separate registered condition.
+- **What happens with live games and market odds?** Live mode is implemented and passed a dry-run. Growing the sample and adding an odds feed would allow a comparison against the market.
+- **Typed tools versus a code tool (RQ4).** Never run.
+- **Does the null result survive a larger sample?** Thousands more games would narrow every interval above.
 
-No betting advice, no real-money integration, no claims of beating the market, and no
-tuning on test data.
+## Next applications
+
+Adding NFL or stocks means writing five domain-specific pieces (loader, derived stats, tools, ML features, hint templates). The as-of guard, ledger, budget, pre-registration, evaluation and reporting are domain-agnostic. See [Adding a domain](docs/USAGE.md#adding-a-domain-nfl-stocks).
+
+## Data Sources
+
+1. NBA schedule, scores and box scores: [stats.nba.com](https://www.nba.com/stats), accessed through the [`nba_api`](https://github.com/swar/nba_api) package.
+2. Elo settings: FiveThirtyEight's published NBA Elo methodology (K = 20, home advantage 100, 25% regression to 1505 between seasons).
+3. LLMs: Anthropic Claude Haiku 5.5 and Sonnet 5.5 through the Anthropic API, with a Claude Code subscription backend used in two small exploratory runs.
+
+## Further Reading
+
+- [REPORT.md](REPORT.md): every table, calibration plot and failure count from every run.
+- [docs/DECISIONS.md](docs/DECISIONS.md): the design decisions, deviations and post-hoc observations, with reasons.
+- [docs/USAGE.md](docs/USAGE.md): installation, running experiments, live mode, safeguards and code layout.
+
+Not betting advice, and nothing here claims to beat the market.

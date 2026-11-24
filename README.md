@@ -11,24 +11,41 @@ reported with confidence intervals, sample sizes and costs, counts as a finding.
 
 ## Headline findings
 
-Pre-registered, Claude Haiku 5.5, `replay_anonymized`, 600 games from the 2025-26 season,
-paired on the same games. Brier score, lower is better; 95% paired-bootstrap CIs; Holm
-correction across 5 comparisons. Full tables: [REPORT.md](REPORT.md).
+**Primary experiment** ([`main_v2`](configs/experiments/main_v2.yaml), pre-registered): Claude Haiku 5.5, `replay_anonymized`, 1,000 games from Nov 2024 to Apr 2026. All results are paired on the same games and scored with Brier (lower is better). Intervals are 95% paired-bootstrap CIs, and p-values are Holm-corrected across 5 comparisons. Full tables are in [REPORT.md](REPORT.md).
 
 | Question | Result | Verdict |
 |---|---|---|
-| Agent vs baselines | Agent A 0.2178 · logistic 0.2169 · Elo 0.2241 · coin flip 0.2500 | An LLM agent with simple stat tools forecasts about as well as a tuned logistic regression. It is not better. |
-| RQ1 memory (B − A) | −0.0032 [−0.0064, +0.0001], Holm p = 0.26 | Small improvement that is not significant. Worth retesting with more games. |
-| RQ2 self-critique (C − A) | +0.0019 [−0.0012, +0.0050]; draft → final −0.0001 | **No benefit.** Critique revises half the forecasts, makes them slightly less confident, and leaves accuracy unchanged. |
-| RQ3 false hint (D − A, 120 games) | shifts forecasts toward the hint by only +0.008, and changes the predicted winner 6.7% of the time; Brier −0.0017 [−0.010, +0.007] | Largely robust. A false "back-to-back" hint is the most persuasive (+0.031). Fewer than the pre-registered minimum of 300 hinted games. |
-| RQ5 contamination (300 games) | Exact-score recall 0/150 vs 0/100 post-cutoff controls; real names vs masked +0.001 [−0.004, +0.006]; "ignore what you remember" guardrail +0.002 [−0.001, +0.006] | **No evidence of memorized results** for this model and season, so masked replay is trustworthy here. The guardrail has no measurable effect. |
+| Agent vs baselines | Agent A 0.2059 · Elo 0.2066 · logistic 0.2067 · GBM 0.2087 · coin flip 0.2500 | The LLM agent with simple stat tools **ties the classical models**. A − logistic is −0.0008 [−0.0043, +0.0026]. |
+| RQ1 memory (B − A) | +0.0019 [−0.0007, +0.0045], p_holm 0.71 | **No benefit.** In the post-cutoff test (below), memory makes forecasts **significantly worse**. |
+| RQ2 self-critique (C − A) | +0.0011 [−0.0009, +0.0030]; draft → final +0.0007 | **No benefit.** Critique revises 72% of forecasts and makes them less confident, with no accuracy gain. |
+| RQ3 false hint (D − A, 300 games) | Shifts forecasts toward the hint by +0.014; flips the predicted winner in 5.0% of games; Brier +0.0032 [−0.0023, +0.0088] | **Mostly robust.** The false "back-to-back" hint is the most persuasive (+0.032). |
+| Model size: Sonnet 5.5 − Haiku 5.5 (400-game nested subsample) | −0.0023 [−0.0070, +0.0025], p_holm 0.69 | **Not significantly better** at about 17× the cost per forecast ($0.012 vs $0.0007). |
 
-Total LLM cost for both experiments: $2.81 (about $0.001 per forecast).
+**Contamination-free replication** ([`postcutoff_v1`](configs/experiments/postcutoff_v1.yaml), pre-registered): 248 games from the 2026-27 season. All tip off after the model's training cutoff, so real team names are safe to show.
+
+| Question | Result |
+|---|---|
+| RQ1 memory (B − A) | **+0.0082 [+0.0021, +0.0141], p_holm 0.03.** Memory significantly hurts. This is the only comparison across all experiments that survives correction. |
+| RQ2 self-critique (C − A) | +0.0008 [−0.0034, +0.0048], no effect again |
+| Agent A vs Elo / logistic | +0.0009 / +0.0117, both not significant |
+
+*Why memory hurts (exploratory; this was not pre-registered):* 62% of the post-cutoff memory notes name a specific team, compared with 0% in masked replay. Consecutive notes also give opposite advice ("shrink toward the base rate" vs "trust the form gap"). The agent appears to learn from single-game noise. See [DECISIONS](docs/DECISIONS.md) O5.
+
+**Contamination audit (RQ5):** a no-tools recall probe asked for exact final scores.
+- **Haiku:** across two runs, 2 of 300 experiment-era games recalled exactly vs 0 of 100 post-cutoff controls in each run.
+- **Sonnet:** 1.3% vs 1.0% for the controls.
+- **Real names vs masked:** +0.001 [−0.004, +0.006]. An "ignore what you remember" guardrail adds +0.002 [−0.001, +0.006].
+
+There is **no meaningful evidence of memorized results**, and the guardrail does nothing measurable.
+
+**Bottom line:** memory, self-critique and a bigger model were each tested against a plain tool-using agent on the same games. None of them improved its NBA forecasts, and memory made them worse. The plain agent is about as good as a logistic regression on Elo and rest features. A null result is still a result.
+
+Total cost: **$12.17** in API spend for the 5 reported experiments, covering 7,338 forecasts, plus two small runs on a Claude subscription. Every ledger is in the release zip (`runs.zip`) and can be re-verified.
 
 ## Research questions
 
 All of these are paired comparisons on the same games, set out in advance in
-[`configs/experiments/main_v1.yaml`](configs/experiments/main_v1.yaml).
+[`configs/experiments/main_v2.yaml`](configs/experiments/main_v2.yaml) (main_v1 was the earlier, smaller run).
 
 | RQ | Question | Variant |
 |---|---|---|
@@ -75,7 +92,7 @@ Timings below were measured from a fresh clone on a home connection.
 git clone https://github.com/TylerValdov/agent-forecast-lab && cd agent-forecast-lab
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"                    # ~3 min
-pytest -q                                  # 60 tests incl. the adversarial leakage tests, ~30 s
+pytest -q                                  # 61 tests incl. the adversarial leakage tests, ~30 s
 
 forecast-lab data refresh                  # caches 6 seasons from stats.nba.com, ~40 s
 forecast-lab baselines --no-ml             # Elo / home-rate / coin-flip scoreboard, ~45 s
